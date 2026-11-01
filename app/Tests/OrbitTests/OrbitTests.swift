@@ -77,6 +77,15 @@ final class OrbitTests: XCTestCase {
         }
     }
 
+    func testBundledHandwritingFontLoadsForLatinText() {
+        let fonts = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Resources/Fonts")
+        FontRegistry.register(folder: fonts)
+        XCTAssertNotNil(NSFont(name: "PatrickHand-Regular", size: 20))
+        XCTAssertEqual(Handwriting.fontName(for: "Save first"), "PatrickHand-Regular")
+        XCTAssertNotEqual(Handwriting.fontName(for: "먼저 저장"), "PatrickHand-Regular", "Patrick Hand has no Hangul")
+    }
+
     @MainActor func testEndpointValidation() throws {
         XCTAssertEqual(try ProviderClient.endpoint(base: "https://example.com/v1/", suffix: "chat/completions").absoluteString, "https://example.com/v1/chat/completions")
         XCTAssertEqual(try ProviderClient.endpoint(base: "http://127.0.0.1:11434", suffix: "api/chat").path, "/api/chat")

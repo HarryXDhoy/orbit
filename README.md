@@ -46,3 +46,5 @@ See [app/DESIGN.md](app/DESIGN.md) for the design system.
 
 ## Credits
 Inspired by [Clicky](https://github.com/farzaa/clicky) by Farza (MIT). Orbit is an independent app and is not affiliated with HeyClicky.
+
+Handwriting is set in [Patrick Hand](https://fonts.google.com/specimen/Patrick+Hand) by Patrick Wagesreiter, licensed under the SIL Open Font License 1.1 (`app/Resources/Fonts/PatrickHand-OFL.txt`).

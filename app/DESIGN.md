@@ -46,7 +46,7 @@ with a soft glow of the same colour (65%, about a 12pt blur). No white underlay.
 - **Frames**: a dashed outline (8 on, 5 off) with a 7% tint; a pill for wide short things, small rounded corners
   otherwise.
 - **Rings**: one loop that runs a little past where it started, slightly uneven like a hand.
-- **Handwriting**: Patrick Hand when bundled, Noteworthy otherwise; Nanum Pen for Korean. White on dark screens,
+- **Handwriting**: Patrick Hand (bundled, OFL); Nanum Pen for Korean when the Mac has it, Noteworthy as the fallback. White on dark screens,
   near-black on light ones, read from the screenshot under the words.
 - **Badges, ticks, crosses, highlighter, sticky notes**: badges are small gel coins; the highlighter is a 26% band of
   ink; sticky notes are butter-yellow paper tilted −2° with a folded corner and a strip of tape in the light gel
