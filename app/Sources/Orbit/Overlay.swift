@@ -85,6 +85,10 @@ final class OverlayModel: ObservableObject {
     /// A breath between strokes, like a hand lifting the pen.
     static let gap = 0.08
     var keepDrawings: TimeInterval = 30
+    /// Keeps drawings up past `keepDrawings`, while a walkthrough waits for its click.
+    var holdDrawings: () -> Bool = { false }
+    /// Finds the real control under a ring's box; the ring moves onto it when there is one.
+    var snap: (CGRect) -> CGRect? = { _ in nil }
 
     func start() {
         guard timer == nil else { return }
@@ -97,6 +101,9 @@ final class OverlayModel: ObservableObject {
     /// Draws marks in order; `tone` says whether the screenshot is dark or light under an area (for free words).
     func play(_ marks: [SketchMark], frame: CGRect, tone: (CGRect) -> Stroke.Tone = { _ in .dark }) {
         var made = marks.map { Stroke.make($0, in: frame, tone: tone) }
+        for i in made.indices where made[i].kind == .target {
+            if let control = snap(made[i].box.insetBy(dx: 4, dy: 4)) { made[i] = made[i].snapped(to: control) }
+        }
         let screens = NSScreen.screens.map(\.frame)
         LabelLayout.place(&made, screens: screens.isEmpty ? [frame] : screens)
         var time = 0.0
@@ -181,7 +188,7 @@ final class OverlayModel: ObservableObject {
                 penEase = strokes[i].kind == .point ? 0.14 : 0.45
             }
         }
-        if let done = drawingDone, now.timeIntervalSince(done) > keepDrawings {
+        if let done = drawingDone, now.timeIntervalSince(done) > keepDrawings, !holdDrawings() {
             strokes = []; starts = []; elapsed = 0; drawingStarted = nil; drawingDone = nil
         }
         var building: CGPoint?
@@ -413,15 +420,20 @@ struct StrokeView: View {
             ClickTarget(ink: ink, radius: stroke.radius, fraction: fraction)
                 .frame(width: r.width, height: r.height).position(x: r.midX, y: r.midY)
         case .spotlight:
+            // The lights go down around one thing, with a soft edge to the opening like a stage light.
             let hole = local(stroke.box)
-            Path { p in
-                p.addRect(CGRect(origin: .zero, size: frame.size))
-                p.addRoundedRect(in: hole, cornerSize: CGSize(width: stroke.radius, height: stroke.radius), style: .continuous)
+            ZStack {
+                Rectangle().fill(Color.black.opacity(0.42))
+                RoundedRectangle(cornerRadius: stroke.radius, style: .continuous)
+                    .frame(width: hole.width, height: hole.height).position(x: hole.midX, y: hole.midY)
+                    .blur(radius: 7)
+                    .blendMode(.destinationOut)
             }
-            .fill(Color.black.opacity(0.42 * fraction), style: FillStyle(eoFill: true))
+            .drawingGroup() // rendered as one layer, so the cut-out and its soft edge come out the same everywhere
+            .opacity(fraction)
         case .cheer:
             let r = local(stroke.box)
-            GelLabel(text: stroke.text ?? "", ink: ink, size: 15).frame(width: r.width, height: r.height).position(x: r.midX, y: r.midY)
+            CheerBurst(face: stroke.text ?? "", ink: ink).frame(width: r.width, height: r.height).position(x: r.midX, y: r.midY)
         }
     }
 
@@ -633,13 +645,63 @@ struct ClickTarget: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         ZStack {
-            shape.stroke(ink.color.opacity(0.5), lineWidth: 2)
-                .scaleEffect(pulse ? 1.12 : 1).opacity(pulse ? 0 : 0.9)
+            // The ripple grows by the same few points on every side, so a wide field pulses like a small button.
+            RoundedRectangle(cornerRadius: radius + (pulse ? 9 : 0), style: .continuous)
+                .stroke(ink.color, lineWidth: 2)
+                .padding(pulse ? -9 : 0)
+                .opacity(pulse ? 0 : 0.55)
+                .opacity(fraction >= 1 ? 1 : 0)
             shape.trim(from: 0, to: fraction)
                 .stroke(ink.color, style: StrokeStyle(lineWidth: Stroke.pen, lineCap: .round, lineJoin: .round))
                 .shadow(color: ink.color.opacity(0.65), radius: 6)
         }
-        .onAppear { withAnimation(.easeOut(duration: 1.3).repeatForever(autoreverses: false)) { pulse = true } }
+        .onAppear { withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) { pulse = true } }
+    }
+}
+
+/// A kaomoji on gel when something worked, with a little burst of twinkles flying off its edge.
+struct CheerBurst: View {
+    let face: String
+    let ink: Ink
+    @State private var burst = false
+
+    var body: some View {
+        GeometryReader { g in
+            let rx = g.size.width / 2, ry = g.size.height / 2
+            ZStack {
+                ForEach(0..<10, id: \.self) { i in
+                    let angle = Double(i) / 10 * 2 * .pi + 0.3, big = i.isMultiple(of: 2)
+                    let reach: CGFloat = burst ? (big ? 34 : 24) : 0
+                    Twinkle().fill(big ? ink.color : ink.gel.top)
+                        .frame(width: big ? 11 : 7, height: big ? 11 : 7)
+                        .shadow(color: ink.color.opacity(0.65), radius: 4)
+                        .scaleEffect(burst ? 0.6 : 1)
+                        .offset(x: cos(angle) * (rx + reach), y: sin(angle) * (ry + reach))
+                        .animation(.easeOut(duration: 0.7), value: burst)
+                        // They fly out first, then fade.
+                        .opacity(burst ? 0 : 1)
+                        .animation(.easeIn(duration: 0.4).delay(0.35), value: burst)
+                }
+                GelLabel(text: face, ink: ink, size: 15)
+            }
+            .frame(width: g.size.width, height: g.size.height)
+        }
+        .onAppear { burst = true }
+    }
+}
+
+/// A four-pointed twinkle.
+struct Twinkle: Shape {
+    func path(in r: CGRect) -> Path {
+        Path { p in
+            let c = CGPoint(x: r.midX, y: r.midY), w = r.width / 2, h = r.height / 2, k: CGFloat = 0.2
+            p.move(to: CGPoint(x: c.x, y: c.y - h))
+            p.addQuadCurve(to: CGPoint(x: c.x + w, y: c.y), control: CGPoint(x: c.x + w * k, y: c.y - h * k))
+            p.addQuadCurve(to: CGPoint(x: c.x, y: c.y + h), control: CGPoint(x: c.x + w * k, y: c.y + h * k))
+            p.addQuadCurve(to: CGPoint(x: c.x - w, y: c.y), control: CGPoint(x: c.x - w * k, y: c.y + h * k))
+            p.addQuadCurve(to: CGPoint(x: c.x, y: c.y - h), control: CGPoint(x: c.x - w * k, y: c.y - h * k))
+            p.closeSubpath()
+        }
     }
 }
 

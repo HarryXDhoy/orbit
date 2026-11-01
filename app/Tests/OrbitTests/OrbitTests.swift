@@ -346,6 +346,115 @@ final class OrbitTests: XCTestCase {
         XCTAssertEqual(typed, 1)
         XCTAssertEqual(Shortcut.typeDefault.display, "⌃⌘T")
     }
+
+    func testWalkthroughTagsParseAndStayOutOfTheReply() {
+        let walk = WalkScript.parse("[TASK:export as MP4] Open the File menu. [WAIT:type a name][TASK:something else]")
+        XCTAssertEqual(walk.text, "Open the File menu.")
+        XCTAssertEqual(walk.task, "export as MP4") // the first one counts
+        XCTAssertEqual(walk.wait, "type a name")
+        let parsed = SketchScript.parse("Click Export.\n[SPOT:0.1,0.1,0.2,0.05][TARGET:0.1,0.1,0.2,0.05:Export][HOVER:0.5,0.5,0.1,0.1:Recent][CHEER:0.5,0.5]")
+        XCTAssertEqual(parsed.text, "Click Export.")
+        XCTAssertEqual(parsed.marks, [.spotlight(CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.05)), .target(CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.05), "Export"),
+                                      .hover(CGRect(x: 0.5, y: 0.5, width: 0.1, height: 0.1), "Recent"), .cheer(CGPoint(x: 0.5, y: 0.5), "(^▽^)")])
+        XCTAssertTrue(SketchScript.parse("[HOVER:0.5,0.5,0,0.1:flat]").marks.isEmpty)
+    }
+
+    func testWalkStepsWaitForTheRingedControlOnly() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let click = Stroke.make(.target(CGRect(x: 0.1, y: 0.1, width: 0.1, height: 0.05), "Export"), in: frame)
+        let hover = Stroke.make(.hover(CGRect(x: 0.5, y: 0.5, width: 0.1, height: 0.05), nil), in: frame)
+        XCTAssertEqual(WalkStep.from([click], wait: "type"), .click(click.box, "Export")) // a ring wins over a wait
+        XCTAssertEqual(WalkStep.from([click, hover], wait: nil), .hover(hover.box, nil))
+        XCTAssertEqual(WalkStep.from([Stroke.make(.check(CGPoint(x: 0.5, y: 0.5)), in: frame)], wait: "type your name"), .manual("type your name"))
+        XCTAssertNil(WalkStep.from([], wait: nil))
+
+        let wait = WalkWait(.click(click.box, "Export"))
+        XCTAssertTrue(wait.finishes(clickAt: CGPoint(x: click.box.midX, y: click.box.midY)))
+        XCTAssertTrue(wait.finishes(clickAt: CGPoint(x: click.box.maxX + 3, y: click.box.midY)))
+        XCTAssertFalse(wait.finishes(clickAt: CGPoint(x: click.box.maxX + 20, y: click.box.midY)))
+
+        let start = Date(), on = CGPoint(x: hover.box.midX, y: hover.box.midY)
+        var resting = WalkWait(.hover(hover.box, nil), since: start)
+        XCTAssertFalse(resting.finishes(clickAt: on), "a hover step doesn't wait for a click")
+        XCTAssertFalse(resting.rests(at: on, now: start))
+        XCTAssertFalse(resting.rests(at: .zero, now: start.addingTimeInterval(0.5))) // moving off starts over
+        XCTAssertFalse(resting.rests(at: on, now: start.addingTimeInterval(0.6)))
+        XCTAssertTrue(resting.rests(at: on, now: start.addingTimeInterval(1.25)))
+        XCTAssertTrue(WalkWait(.manual("x"), since: start).expired(at: start.addingTimeInterval(WalkWait.patience + 1)))
+    }
+
+    func testStepMessagesSpeakTheConversationsLanguage() {
+        XCTAssertEqual(WalkStep.click(.zero, "Export").doneMessage(language: "en"), "Clicked “Export”. What's next?")
+        XCTAssertEqual(WalkStep.click(.zero, "내보내기").doneMessage(language: "ko"), "“내보내기” 눌렀어요. 다음은 뭐예요?")
+        XCTAssertEqual(WalkStep.hover(.zero, nil).doneMessage(language: "ko-KR"), "올렸어요. 다음은 뭐예요?")
+        XCTAssertEqual(WalkStep.manual("x").doneMessage(language: "ja"), "できました。次は？")
+        XCTAssertEqual(WalkStep.manual("x").doneMessage(language: "und"), "Done. What's next?")
+    }
+
+    func testRingsSnapOnlyOntoAControlAboutTheSizeTheModelDrew() {
+        let box = CGRect(x: 100, y: 100, width: 80, height: 24)
+        XCTAssertTrue(ControlFinder.plausible(CGRect(x: 96, y: 98, width: 92, height: 28), for: box))
+        XCTAssertFalse(ControlFinder.plausible(CGRect(x: 0, y: 0, width: 1200, height: 700), for: box), "a whole pane")
+        XCTAssertFalse(ControlFinder.plausible(CGRect(x: 120, y: 105, width: 8, height: 8), for: box), "a speck inside it")
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let ring = Stroke.make(.hover(CGRect(x: 0.1, y: 0.1, width: 0.3, height: 0.2), "menu"), in: frame)
+        let snapped = ring.snapped(to: CGRect(x: 120, y: 650, width: 160, height: 22))
+        XCTAssertEqual(snapped.box, CGRect(x: 116, y: 646, width: 168, height: 30))
+        XCTAssertEqual(snapped.radius, 15) // a wide, short control gets a pill
+        XCTAssertTrue(snapped.waitsForHover)
+        XCTAssertEqual(snapped.label, "menu")
+    }
+
+    @MainActor func testWalkthroughAdvancesOnTheClickAndKeepsItsPlace() async {
+        let sounds = SoundFX.shared.enabled
+        SoundFX.shared.enabled = false
+        defer { SoundFX.shared.enabled = sounds }
+        let walkthrough = Walkthrough()
+        walkthrough.settle = 0
+        var sent: [String] = [], statuses: [WalkStatus?] = [], cleared = 0
+        let asked = expectation(description: "asks for the next step")
+        asked.assertForOverFulfill = false
+        walkthrough.onNext = { message, _, _ in sent.append(message); asked.fulfill() }
+        walkthrough.onChange = { statuses.append($0) }
+        walkthrough.clearMarks = { cleared += 1 }
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let ring = Stroke.make(.target(CGRect(x: 0.1, y: 0.1, width: 0.1, height: 0.05), "내보내기"), in: frame)
+        let center = CGPoint(x: ring.box.midX, y: ring.box.midY)
+
+        walkthrough.follow([ring], wait: nil, task: "MP4로 내보내기", chat: nil, spoken: false, language: "ko")
+        XCTAssertEqual(walkthrough.count, 1)
+        walkthrough.clicked(at: CGPoint(x: 600, y: 300)) // somewhere else: still waiting
+        XCTAssertTrue(walkthrough.isWaiting)
+        walkthrough.clicked(at: center)
+        XCTAssertFalse(walkthrough.isWaiting)
+        XCTAssertEqual(cleared, 1)
+        XCTAssertEqual(statuses.last, WalkStatus(task: "MP4로 내보내기", count: 1, state: .looking))
+        await fulfillment(of: [asked], timeout: 2)
+        XCTAssertEqual(sent, ["“내보내기” 눌렀어요. 다음은 뭐예요?"])
+
+        // The next reply's step continues the same walkthrough, even after a question in between.
+        walkthrough.pause()
+        walkthrough.follow([], wait: "파일 이름 입력", task: nil, chat: nil, spoken: false, language: "ko")
+        XCTAssertEqual(walkthrough.count, 2)
+        XCTAssertEqual(statuses.last, WalkStatus(task: "MP4로 내보내기", count: 2, state: .waiting(.manual("파일 이름 입력"))))
+        walkthrough.clicked(at: center) // a manual step waits for the button, not a click
+        XCTAssertTrue(walkthrough.isWaiting)
+
+        // Stopping while the next step is on its way means it never goes out.
+        walkthrough.settle = 0.2
+        walkthrough.proceed()
+        walkthrough.stop()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertFalse(walkthrough.isActive)
+
+        // A reply with no step ends a walkthrough; one without a walkthrough going leaves it off.
+        walkthrough.follow([ring], wait: nil, task: nil, chat: nil, spoken: false, language: "en")
+        XCTAssertEqual(walkthrough.count, 1)
+        walkthrough.follow([], wait: nil, task: nil, chat: nil, spoken: false, language: "en")
+        XCTAssertFalse(walkthrough.isActive)
+        XCTAssertNil(statuses.last!)
+    }
 }
 
 final class FixtureProtocol: URLProtocol {

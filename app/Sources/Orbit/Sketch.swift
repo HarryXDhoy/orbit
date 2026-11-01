@@ -19,6 +19,8 @@ enum SketchMark: Equatable {
     case note(CGPoint, String)
     /// A control to click; Orbit waits for the click before the next step of a walkthrough.
     case target(CGRect, String?)
+    /// Something to point at (a menu that opens on hover); Orbit waits for the pointer to rest on it.
+    case hover(CGRect, String?)
     /// Dims everything except this area.
     case spotlight(CGRect)
     /// A little face when something worked.
@@ -27,7 +29,7 @@ enum SketchMark: Equatable {
     var label: String? {
         switch self {
         case .point(_, let l): return l
-        case .box(_, let l), .circle(_, _, let l), .arrow(_, _, let l), .target(_, let l): return l
+        case .box(_, let l), .circle(_, _, let l), .arrow(_, _, let l), .target(_, let l), .hover(_, let l): return l
         default: return nil
         }
     }
@@ -37,7 +39,7 @@ enum SketchMark: Equatable {
 enum SketchScript {
     static let maxMarks = 40
     static let maxPathPoints = 160
-    private static let regex = try! NSRegularExpression(pattern: #"\[(POINT|BOX|CIRCLE|ARROW|LINE|PATH|TEXT|UNDERLINE|HIGHLIGHT|NUM|CHECK|CROSS|NOTE|TARGET|SPOT|CHEER):([^\]\n]{1,4000})\]"#)
+    private static let regex = try! NSRegularExpression(pattern: #"\[(POINT|BOX|CIRCLE|ARROW|LINE|PATH|TEXT|UNDERLINE|HIGHLIGHT|NUM|CHECK|CROSS|NOTE|TARGET|HOVER|SPOT|CHEER):([^\]\n]{1,4000})\]"#)
 
     static func parse(_ text: String) -> (text: String, marks: [SketchMark]) {
         let range = NSRange(text.startIndex..., in: text)
@@ -81,6 +83,7 @@ enum SketchScript {
         case ("CROSS", 2): return .cross(p)
         case ("NOTE", 2): return words.isEmpty ? nil : .note(p, String(words.prefix(160)))
         case ("TARGET", 4): return n[2] > 0 && n[3] > 0 ? .target(CGRect(x: n[0], y: n[1], width: n[2], height: n[3]), tag) : nil
+        case ("HOVER", 4): return n[2] > 0 && n[3] > 0 ? .hover(CGRect(x: n[0], y: n[1], width: n[2], height: n[3]), tag) : nil
         case ("SPOT", 4): return n[2] > 0 && n[3] > 0 ? .spotlight(CGRect(x: n[0], y: n[1], width: n[2], height: n[3])) : nil
         case ("CHEER", 2): return .cheer(p, words.isEmpty ? "(^▽^)" : String(words.prefix(16)))
         default: return nil
@@ -116,6 +119,8 @@ struct Stroke {
     var anchor: CGRect?
     var tone: Tone = .dark
     var textSize: CGFloat = 26
+    /// A ring that waits for the pointer to rest on it rather than for a click.
+    var waitsForHover = false
 
     static let pen: CGFloat = 3.5
     static let noteSide: CGFloat = 170
@@ -146,6 +151,8 @@ struct Stroke {
             let xs = points.map(\.x), ys = points.map(\.y)
             guard let x0 = xs.min(), let x1 = xs.max(), let y0 = ys.min(), let y1 = ys.max() else { return .zero }
             return CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0).insetBy(dx: -lineWidth, dy: -lineWidth)
+        case .spotlight:
+            return .null // it lights a spot rather than covering it, so a label can sit right by the thing it lights
         default:
             return box
         }
@@ -192,6 +199,19 @@ struct Stroke {
         zip(path, path.dropFirst()).reduce(0) { $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y) }
     }
 
+    /// Wide, short things (a field, a button, a bar) get a pill; anything else rounded corners.
+    static func cornerRadius(of b: CGRect, max corner: CGFloat) -> CGFloat {
+        b.width > 2.5 * b.height && b.height < 60 ? b.height / 2 : min(corner, b.height / 2)
+    }
+
+    /// The same ring around the real control, once Accessibility has found it.
+    func snapped(to control: CGRect) -> Stroke {
+        var ring = self
+        ring.box = control.insetBy(dx: -4, dy: -4)
+        ring.radius = Self.cornerRadius(of: ring.box, max: 10)
+        return ring
+    }
+
     /// Resolves a mark in the screenshot's frame. `tone` reads the screenshot under a normalized rect.
     static func make(_ mark: SketchMark, in frame: CGRect, tone: (CGRect) -> Tone = { _ in .dark }) -> Stroke {
         func g(_ p: CGPoint) -> CGPoint { CGPoint(x: frame.minX + p.x * frame.width, y: frame.maxY - p.y * frame.height) }
@@ -208,9 +228,7 @@ struct Stroke {
 
         case .box(let r, let label):
             let b = rect(r).insetBy(dx: -3, dy: -3)
-            // Wide, short things (a field, a button, a bar) get a pill; anything else small rounded corners.
-            let radius = b.width > 2.5 * b.height && b.height < 60 ? b.height / 2 : min(8, b.height / 2)
-            return Stroke(kind: .frame, box: b, radius: radius, label: label)
+            return Stroke(kind: .frame, box: b, radius: cornerRadius(of: b, max: 8), label: label)
 
         case .circle(let c, let r, let label):
             let center = g(c), radius = max(10, r * frame.width) + 4
@@ -270,16 +288,17 @@ struct Stroke {
             return Stroke(kind: .pen, paths: [[CGPoint(x: c.x - s / 2, y: c.y + s / 2), CGPoint(x: c.x + s / 2, y: c.y - s / 2)],
                                               [CGPoint(x: c.x + s / 2, y: c.y + s / 2), CGPoint(x: c.x - s / 2, y: c.y - s / 2)]])
 
-        case .target(let r, let label):
+        case .target(let r, let label), .hover(let r, let label):
             let b = rect(r).insetBy(dx: -4, dy: -4)
-            let radius = b.width > 2.5 * b.height && b.height < 60 ? b.height / 2 : min(10, b.height / 2)
-            return Stroke(kind: .target, box: b, radius: radius, label: label)
+            var ring = Stroke(kind: .target, box: b, radius: cornerRadius(of: b, max: 10), label: label)
+            if case .hover = mark { ring.waitsForHover = true }
+            return ring
 
         case .spotlight(let r):
             return Stroke(kind: .spotlight, box: rect(r).insetBy(dx: -10, dy: -10), radius: 14)
 
         case .cheer(let p, let face):
-            let c = g(p), width = LabelLayout.size(face).width + 12
+            let c = g(p), width = LabelLayout.size(face, fontSize: 15).width + 8
             return Stroke(kind: .cheer, box: CGRect(x: c.x - width / 2, y: c.y - 15, width: width, height: 30), text: face)
 
         case .note(let p, let words):
@@ -298,8 +317,8 @@ enum LabelLayout {
     static let height: CGFloat = 23
     static let gap: CGFloat = 5
 
-    static func size(_ text: String) -> CGSize {
-        let width = (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)]).width
+    static func size(_ text: String, fontSize: CGFloat = 12) -> CGSize {
+        let width = (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: fontSize, weight: .semibold)]).width
         return CGSize(width: ceil(width) + 20, height: height)
     }
 

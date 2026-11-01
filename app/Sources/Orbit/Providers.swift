@@ -43,15 +43,21 @@ final class ProviderClient {
     [TEXT:x,y:words]            handwritten words on empty space; x,y is where the words start
     [NOTE:x,y:words]            a sticky note (x,y is its top-left) with a one or two sentence explanation, only on
                                 empty space and never to name something on screen
-    [SPOT:x,y,w,h]              dim everything except this area; put it first
-    [TARGET:x,y,w,h:label]      ring the control to click next and wait for the user to click it
+    [SPOT:x,y,w,h]              dim everything except this one thing; put it first, with a TARGET or BOX on it
+    [TARGET:x,y,w,h:label]      ring the control to click next, its box tight around the control; Orbit waits
+                                for the click
+    [HOVER:x,y,w,h:label]       ring something to point at (a menu that opens on hover); Orbit waits for the
+                                pointer to rest on it
     [CHEER:x,y:face]            a small kaomoji like (^▽^) when something worked; at most one, last
     Labels name things in one to four words; Orbit places them beside the mark so they never cover it. Leave a
     label out when the reply already says what the mark is.
 
-    To walk the user through steps in an app, give one step at a time: say what to do and put a TARGET on the
-    control to click. Orbit waits for that click, then sends you the new screen so you can give the next step.
-    When the task is done, stop using TARGET.
+    To walk the user through steps in an app, give one step at a time: say what to do and put a TARGET (or
+    HOVER) on the real control. Orbit waits for it, then sends you the new screen so you can give the next step.
+    Begin the first step with [TASK:short name of the task], like [TASK:export as MP4]. When a step is work
+    Orbit can't see finish (typing, dragging, picking a file), give [WAIT:what to do, in a few words] instead
+    of a TARGET; the user says when it's done. When the task is done, stop using TARGET, HOVER and WAIT, and
+    end with a CHEER.
 
     A thick translucent line drawn on the screenshot is the path of the user's pointer while they talked: they
     are pointing at what it circles, underlines or touches.

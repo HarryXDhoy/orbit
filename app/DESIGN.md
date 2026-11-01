@@ -51,5 +51,15 @@ with a soft glow of the same colour (65%, about a 12pt blur). No white underlay.
 - **Badges, ticks, crosses, highlighter, sticky notes**: badges are small gel coins; the highlighter is a 26% band of
   ink; sticky notes are butter-yellow paper tilted −2° with a folded corner and a strip of tape in the light gel
   tone, used only for explanations on empty space.
-- **Sound**: a quiet pen scratch while drawing, a pop when a label lands, a tap for a sticky note, a sweep on clear.
+- **Click targets**: a solid 3.5pt ring with the glow, 4pt off the control, moved onto the control's real frame when
+  Accessibility finds one about the size the model drew. A pill for wide short controls, and a ripple that grows 9pt
+  on every side every 1.4s. It stays up while Orbit waits: a click inside it (4pt slop), or for a hover target the
+  pointer resting 0.6s, ticks, and the next step is asked for once the app has had 0.7s to react.
+- **Spotlight**: everything dims to 42% black except a soft-edged opening (7pt blur) 10pt around one thing.
+- **Cheer**: a kaomoji on a 15pt gel pill; ten twinkles fly off its edge and fade within a second.
+- **Walkthrough bar**: a silver capsule at the top centre of the screen, or the bottom when the top would cover the
+  control: the step number on a gel coin, the task in 13pt semibold, what Orbit waits for in 11pt, an aqua
+  **next step** pill for steps Orbit can't see finish, and × to stop. It takes clicks without taking focus.
+- **Sound**: a quiet pen scratch while drawing, a pop when a label lands, a tap for a sticky note, a ping for a click
+  target, a soft sweep as a spotlight dims, a tick when the click lands, a little chime for a cheer, a sweep on clear.
   All synthesized; can be turned off in Settings.
