@@ -147,6 +147,52 @@ final class OrbitTests: XCTestCase {
         XCTAssertEqual(Conversation.title(for: "fix my code\nsecond line"), "fix my code")
         XCTAssertEqual(Conversation.title(for: String(repeating: "a", count: 60)).count, 49)
     }
+
+    func testAutoLanguageNeedsTwoLanguagesAndListensToFirstThree() {
+        var settings = ConnectionSettings()
+        settings.languages = ["ko-KR"]
+        settings.language = Dictation.auto
+        XCTAssertEqual(settings.language, "ko-KR")
+        XCTAssertEqual(settings.listening, ["ko-KR"])
+        settings.languages = ["ko-KR", "en-US", "ja-JP", "fr-FR"]
+        XCTAssertEqual(settings.language, Dictation.auto)
+        XCTAssertEqual(settings.listening, ["ko-KR", "en-US", "ja-JP"])
+        settings.language = "en-US"
+        XCTAssertEqual(settings.listening, ["en-US"])
+    }
+
+    @MainActor func testAutoDetectKeepsTheMostConfidentTake() {
+        typealias H = VoiceInput.Heard
+        let korean = H(id: "ko-KR", text: "헬로 하우 아 유", confidence: 0.31, isFinal: true)
+        let english = H(id: "en-US", text: "Hello, how are you?", confidence: 0.92, isFinal: true)
+        XCTAssertEqual(VoiceInput.best([korean, english], preferred: "ko-KR")?.id, "en-US")
+        let realKorean = H(id: "ko-KR", text: "오늘 날씨 어때?", confidence: 0.9, isFinal: true)
+        let garbled = H(id: "en-US", text: "Oneul nalssi", confidence: 0.4, isFinal: true)
+        XCTAssertEqual(VoiceInput.best([garbled, realKorean], preferred: "en-US")?.id, "ko-KR")
+        // A language that heard nothing never wins.
+        XCTAssertEqual(VoiceInput.best([H(id: "ja-JP", text: "", confidence: 0, isFinal: true), english], preferred: "ja-JP")?.id, "en-US")
+    }
+
+    @MainActor func testModelListsParseCodexAndOpenAIStyle() throws {
+        let codex = #"{"models":[{"slug":"gpt-a","display_name":"GPT-A","visibility":"list"},{"slug":"internal","visibility":"hide"},{"slug":"gpt-b"}]}"#
+        XCTAssertEqual(try ProviderClient.parseCodexModels(Data(codex.utf8)).map(\.id), ["gpt-a", "gpt-b"])
+        XCTAssertEqual(try ProviderClient.parseCodexModels(Data(codex.utf8)).first?.name, "GPT-A")
+        let openAI = #"{"object":"list","data":[{"id":"model-z"},{"id":"model-a"},{"id":"model-a"}]}"#
+        XCTAssertEqual(try ProviderClient.parseModelList(Data(openAI.utf8)).map(\.id), ["model-a", "model-z"])
+        let ollama = #"{"models":[{"name":"llava:7b"}]}"#
+        XCTAssertEqual(try ProviderClient.parseModelList(Data(ollama.utf8)).map(\.id), ["llava:7b"])
+        XCTAssertThrowsError(try ProviderClient.parseCodexModels(Data("nope".utf8)))
+    }
+
+    @MainActor func testTypeShortcutOpensTheTypingBox() throws {
+        let hotkeys = Hotkeys()
+        var typed = 0
+        hotkeys.onType = { typed += 1 }
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.control, .command], timestamp: 0, windowNumber: 0, context: nil, characters: "t", charactersIgnoringModifiers: "t", isARepeat: false, keyCode: 17))
+        XCTAssertTrue(hotkeys.handle(event))
+        XCTAssertEqual(typed, 1)
+        XCTAssertEqual(Shortcut.typeDefault.display, "⌃⌘T")
+    }
 }
 
 final class FixtureProtocol: URLProtocol {

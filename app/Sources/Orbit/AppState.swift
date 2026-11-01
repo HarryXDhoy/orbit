@@ -19,11 +19,14 @@ final class AppState: ObservableObject {
     @Published var selectedPage = "chat"
     @Published var apiKey = ""
     @Published var connectionResults: [ProviderKind: String] = [:]
-    @Published var localModels: [String] = []
-    @Published var isLoadingModels = false
+    /// Models each connection said it offers, fetched when Connections opens or the provider changes.
+    @Published var models: [ProviderKind: [ModelOption]] = [:]
+    @Published var modelErrors: [ProviderKind: String] = [:]
+    @Published var loadingModels: Set<ProviderKind> = []
     let voice = VoiceInput()
     let overlay = OverlayController()
     let hotkeys = Hotkeys()
+    let quickType = QuickTypeController()
     @Published var hotkeyTrusted = AXIsProcessTrusted()
     private var heard = ""
     let client = ProviderClient()
@@ -40,6 +43,7 @@ final class AppState: ObservableObject {
         do {
             if settings.provider == .custom { try APIKeyStore.save(apiKey, endpoint: settings.customBaseURL) }
             try LocalStore.write(settings, name: "settings.json")
+            if settings.provider == .custom { fetchModels(force: true) }
             return true
         } catch { self.error = error.localizedDescription; return false }
     }
@@ -50,12 +54,15 @@ final class AppState: ObservableObject {
         hotkeys.talk = settings.talkShortcut
         hotkeys.clear = settings.clearShortcut
         hotkeys.open = settings.openShortcut
+        hotkeys.type = settings.typeShortcut
         hotkeys.talkEnabled = settings.talkHotkey
         hotkeys.onTalkStart = { [weak self] in self?.beginTalk() }
         hotkeys.onTalkEnd = { [weak self] in self?.endTalk() }
         hotkeys.onTalkCancel = { [weak self] in self?.cancelTalk() }
         hotkeys.onClear = { [weak self] in self?.overlay.model.clear(); self?.overlay.model.say(nil) }
         hotkeys.onOpen = { [weak self] in self?.showWindow?() }
+        hotkeys.onType = { [weak self] in self?.beginTyping() }
+        quickType.onSend = { [weak self] text in self?.send(text) }
         hotkeys.start()
         hotkeyTrusted = hotkeys.isTrusted
     }
@@ -64,7 +71,7 @@ final class AppState: ObservableObject {
         Task { for _ in 0..<30 { try? await Task.sleep(nanoseconds: 2_000_000_000); hotkeyTrusted = hotkeys.isTrusted; if hotkeyTrusted { return } } }
     }
     func nextLanguage() {
-        let list = settings.languages
+        let list = settings.languages.count > 1 ? settings.languages + [Dictation.auto] : settings.languages
         guard list.count > 1, let i = list.firstIndex(of: settings.language) else { return }
         settings.language = list[(i + 1) % list.count]
         saveSettings()
@@ -75,6 +82,12 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }
+    }
+    /// Type to Orbit from any app: a box opens by the cursor; the reply comes back in the buddy's bubble.
+    func beginTyping() {
+        guard !voice.isRecording else { return }
+        if isBusy { stop() }
+        quickType.toggle()
     }
     func cancelTalk() {
         guard overlay.model.mood == .listening else { return }
@@ -88,7 +101,7 @@ final class AppState: ObservableObject {
         heard = ""
         overlay.model.clear(); overlay.model.mood = .listening; overlay.model.caption = nil
         Task { [self] in
-            await voice.start(locale: Locale(identifier: settings.language), onText: { [weak self] text in self?.heard = text; self?.overlay.model.caption = text },
+            await voice.start(languages: settings.listening, onText: { [weak self] text in self?.heard = text; self?.overlay.model.caption = text },
                               onError: { [weak self] error in self?.error = error; self?.overlay.model.mood = .idle })
         }
     }
@@ -96,15 +109,16 @@ final class AppState: ObservableObject {
         guard overlay.model.mood == .listening else { return }
         Task { [self] in
             try? await Task.sleep(nanoseconds: 350_000_000) // let the last words land
-            voice.stop()
+            let final = await voice.finish()
             overlay.model.mood = .idle; overlay.model.caption = nil
-            let text = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = (final.isEmpty ? heard : final).trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { send(text, spoken: true) }
         }
     }
     func selectProvider(_ provider: ProviderKind) {
         settings.provider = provider
         saveSettings()
+        fetchModels()
     }
     func capture() {
         guard !isCapturing, !isBusy else { return }
@@ -170,22 +184,49 @@ final class AppState: ObservableObject {
             }
         }
     }
-    func fetchModels() {
-        guard !isLoadingModels else { return }
-        isLoadingModels = true; error = nil
+    func fetchModels(force: Bool = false) {
+        let provider = settings.provider
+        guard !loadingModels.contains(provider), force || models[provider] == nil else { return }
+        loadingModels.insert(provider); modelErrors[provider] = nil
+        let configuration = settings
+        let key = provider == .custom ? (apiKey.isEmpty ? APIKeyStore.read(endpoint: settings.customBaseURL) : apiKey) : ""
         Task {
-            defer { isLoadingModels = false }
+            defer { loadingModels.remove(provider) }
             do {
-                localModels = try await client.localModels(base: settings.ollamaBaseURL)
-                if settings.ollamaModel.isEmpty, let first = localModels.first { settings.ollamaModel = first; saveSettings() }
-                if localModels.isEmpty { error = "Ollama is running, but no models are installed yet." }
-            } catch { self.error = error.localizedDescription }
+                let found = try await client.models(settings: configuration, apiKey: key)
+                models[provider] = found
+                if found.isEmpty { modelErrors[provider] = provider == .ollama ? "ollama is running, but no models are installed yet." : "no models came back. type a model id instead." }
+                if provider == .ollama, settings.ollamaModel.isEmpty, let first = found.first { settings.ollamaModel = first.id; saveSettings() }
+            } catch {
+                models[provider] = []
+                modelErrors[provider] = error.localizedDescription
+            }
         }
     }
+    /// The model id the current connection sends; empty means the CLI's own default.
+    var currentModel: String {
+        get {
+            switch settings.provider {
+            case .codex: return settings.codexModel
+            case .claude: return settings.claudeModel
+            case .custom: return settings.customModel
+            case .ollama: return settings.ollamaModel
+            }
+        }
+        set {
+            switch settings.provider {
+            case .codex: settings.codexModel = newValue
+            case .claude: settings.claudeModel = newValue
+            case .custom: settings.customModel = newValue
+            case .ollama: settings.ollamaModel = newValue
+            }
+        }
+    }
+    func chooseModel(_ id: String) { currentModel = id; saveSettings() }
     func toggleVoice() {
-        if voice.isRecording { voice.stop(); return }
+        if voice.isRecording { Task { await voice.finish() }; return }
         let prefix = draft.isEmpty ? "" : draft + " "
-        Task { [self] in await voice.start(locale: Locale(identifier: settings.language), onText: { [weak self] text in self?.draft = prefix + text }, onError: { [weak self] error in self?.error = error }) }
+        Task { [self] in await voice.start(languages: settings.listening, onText: { [weak self] text in self?.draft = prefix + text }, onError: { [weak self] error in self?.error = error }) }
     }
     func speak(_ text: String) {
         speaker.stopSpeaking(at: .immediate)

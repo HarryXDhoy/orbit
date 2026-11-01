@@ -27,6 +27,7 @@ final class OrbitDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Open Orbit", action: #selector(showWindow), keyEquivalent: "o").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "Connections", action: #selector(showConnections), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Type to Orbit", action: #selector(typeToOrbit), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Clear Drawings", action: #selector(clearDrawings), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Orbit", action: #selector(quit), keyEquivalent: "q").target = self
@@ -49,6 +50,7 @@ final class OrbitDelegate: NSObject, NSApplicationDelegate {
     @objc func showWindow() { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     @objc func showSettings() { state.selectedPage = "settings"; showWindow() }
     @objc func showConnections() { state.selectedPage = "connections"; showWindow() }
+    @objc func typeToOrbit() { state.beginTyping() }
     @objc func clearDrawings() { state.overlay.model.clear(); state.overlay.model.say(nil) }
     /// Orbit's face as a menu bar template image: an orb outline and two eyes.
     static func menuBarFace() -> NSImage {

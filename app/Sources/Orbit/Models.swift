@@ -58,14 +58,25 @@ struct ConnectionSettings: Codable {
     var talkKeys: Shortcut?
     var clearKeys: Shortcut?
     var openKeys: Shortcut?
+    var typeKeys: Shortcut?
     var drawingSeconds: Double?
     var talkShortcut: Shortcut { get { talkKeys ?? .talkDefault } set { talkKeys = newValue } }
     var clearShortcut: Shortcut { get { clearKeys ?? .clearDefault } set { clearKeys = newValue } }
     var openShortcut: Shortcut { get { openKeys ?? .openDefault } set { openKeys = newValue } }
+    var typeShortcut: Shortcut { get { typeKeys ?? .typeDefault } set { typeKeys = newValue } }
     var dictationLanguages: [String]?
     var dictationLanguage: String?
     var languages: [String] { get { dictationLanguages?.isEmpty == false ? dictationLanguages! : [Dictation.systemDefault] } set { dictationLanguages = newValue } }
-    var language: String { get { dictationLanguage.flatMap { languages.contains($0) ? $0 : nil } ?? languages[0] } set { dictationLanguage = newValue } }
+    /// A chosen language, or `Dictation.auto` to tell your languages apart as you talk (needs at least two).
+    var language: String {
+        get {
+            if dictationLanguage == Dictation.auto, languages.count > 1 { return Dictation.auto }
+            return dictationLanguage.flatMap { languages.contains($0) ? $0 : nil } ?? languages[0]
+        }
+        set { dictationLanguage = newValue }
+    }
+    /// The languages dictation listens in right now.
+    var listening: [String] { language == Dictation.auto ? Array(languages.prefix(Dictation.autoLimit)) : [language] }
     /// How long drawings stay on screen; 0 keeps them until cleared.
     var keepDrawings: Double { get { drawingSeconds ?? 30 } set { drawingSeconds = newValue } }
 }

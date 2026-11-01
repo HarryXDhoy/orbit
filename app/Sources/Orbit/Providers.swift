@@ -2,6 +2,13 @@ import Foundation
 
 struct ProviderReply { let text: String }
 
+/// A model a connection offers; `id` is what gets sent, `name` is what the list shows.
+struct ModelOption: Hashable, Identifiable {
+    let id: String
+    let name: String
+    var note: String?
+}
+
 @MainActor
 final class ProviderClient {
     private let networkConfiguration: URLSessionConfiguration
@@ -90,7 +97,7 @@ final class ProviderClient {
         return ProviderReply(text: text)
     }
 
-    private func run(executable: String, arguments: [String], input: Data, directory: URL) async throws -> Data {
+    private func run(executable: String, arguments: [String], input: Data, directory: URL, timeout: TimeInterval = 180, tracked: Bool = true) async throws -> Data {
         let inputURL = directory.appendingPathComponent("input.json")
         let outputURL = directory.appendingPathComponent("output.json")
         let errorURL = directory.appendingPathComponent("errors.txt")
@@ -112,10 +119,10 @@ final class ProviderClient {
         child.standardInput = inputHandle
         child.standardOutput = outputHandle
         child.standardError = errorHandle
-        process = child
-        defer { process = nil }
+        if tracked { process = child }
+        defer { if tracked { process = nil } }
         try child.run()
-        let deadline = Date().addingTimeInterval(180)
+        let deadline = Date().addingTimeInterval(timeout)
         do {
             while child.isRunning {
                 try Task.checkCancellation()
@@ -224,6 +231,60 @@ final class ProviderClient {
         else { message = (object["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any] }
         guard let content = message?["content"] as? String, !content.isEmpty else { throw OrbitError("No text reply was returned. Check that this endpoint supports the selected chat format.") }
         return ProviderReply(text: content)
+    }
+
+    /// Asks the connection which models it offers, so they can be picked from a list.
+    func models(settings: ConnectionSettings, apiKey: String) async throws -> [ModelOption] {
+        switch settings.provider {
+        case .codex:
+            let executable = settings.codexPath
+            guard executable.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: executable) else { throw OrbitError("Choose the Codex executable first.") }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("orbit-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let output = try await run(executable: executable, arguments: ["debug", "models"], input: Data(), directory: directory, timeout: 30, tracked: false)
+            return try Self.parseCodexModels(output)
+        case .claude:
+            // Claude Code has no command that lists models; its aliases always point at the newest of each family.
+            return Self.claudeAliases
+        case .custom:
+            let url = try Self.endpoint(base: settings.customBaseURL, suffix: "models")
+            var request = URLRequest(url: url); request.timeoutInterval = 10
+            if !apiKey.isEmpty { request.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization") }
+            let session = URLSession(configuration: networkConfiguration, delegate: NoRedirectDelegate(), delegateQueue: nil)
+            defer { session.finishTasksAndInvalidate() }
+            let (data, response) = try await session.data(for: request)
+            guard let status = (response as? HTTPURLResponse)?.statusCode else { throw OrbitError("The endpoint did not return HTTP.") }
+            guard (200..<300).contains(status) else { throw OrbitError("Listing models returned HTTP \(status). Check the URL and API key, or type the model id.") }
+            return try Self.parseModelList(data)
+        case .ollama:
+            return try await localModels(base: settings.ollamaBaseURL).map { ModelOption(id: $0, name: $0) }
+        }
+    }
+
+    static let claudeAliases = [
+        ModelOption(id: "fable", name: "Fable", note: "newest fable"),
+        ModelOption(id: "opus", name: "Opus", note: "newest opus"),
+        ModelOption(id: "sonnet", name: "Sonnet", note: "newest sonnet"),
+        ModelOption(id: "haiku", name: "Haiku", note: "newest haiku · fastest"),
+    ]
+
+    /// `codex debug models` prints the catalog the signed-in account can use; hidden entries are internal.
+    static func parseCodexModels(_ data: Data) throws -> [ModelOption] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = object["models"] as? [[String: Any]] else { throw OrbitError("Codex didn’t return a model list. Update the Codex CLI or type the model name.") }
+        return models.compactMap { model in
+            guard let slug = model["slug"] as? String, (model["visibility"] as? String ?? "list") == "list" else { return nil }
+            return ModelOption(id: slug, name: model["display_name"] as? String ?? slug, note: (model["description"] as? String).map { String($0.prefix(80)) })
+        }
+    }
+
+    /// OpenAI-style `{"data": [{"id": …}]}` or Ollama-style `{"models": [{"name": …}]}`.
+    static func parseModelList(_ data: Data) throws -> [ModelOption] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw OrbitError("The endpoint returned invalid JSON for its model list.") }
+        let entries = (object["data"] as? [[String: Any]]) ?? (object["models"] as? [[String: Any]]) ?? []
+        let ids = entries.compactMap { ($0["id"] ?? $0["name"]) as? String }
+        return Array(Set(ids)).sorted().map { ModelOption(id: $0, name: $0) }
     }
 
     func localModels(base: String) async throws -> [String] {

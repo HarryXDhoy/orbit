@@ -214,9 +214,10 @@ struct ChatView: View {
                     Button { state.toggleVoice() } label: { Label(voice.isRecording ? "done" : "talk", systemImage: voice.isRecording ? "stop.fill" : "mic") }
                         .buttonStyle(PillButtonStyle(kind: voice.isRecording ? .aqua : .silver, compact: true)).disabled(state.isBusy)
                         .help(voice.isRecording ? "Stop dictation" : "Dictate into the message box")
-                    Button { state.nextLanguage() } label: { Text(Dictation.short(state.settings.language)) }
+                    Button { state.nextLanguage() } label: { Text(languageLabel) }
                         .buttonStyle(PillButtonStyle(kind: .ghost, compact: true)).disabled(voice.isRecording)
-                        .help(state.settings.languages.count > 1 ? "Dictating in \(Dictation.name(state.settings.language)) · click to switch" : "Dictating in \(Dictation.name(state.settings.language)) · add languages in Settings")
+                        .help(languageHelp)
+                    modelMenu
                     Toggle(isOn: $state.settings.seesScreen) { Text("sees screen") }
                         .toggleStyle(PillToggleStyle()).help("Look at your screen with every message so Orbit can point and draw")
                         .onChange(of: state.settings.seesScreen) { _, _ in state.saveSettings() }
@@ -239,7 +240,7 @@ struct ChatView: View {
             .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.black.opacity(0.12), lineWidth: DS.edge))
             .dsShadow()
             HStack(spacing: 6) {
-                Text(voice.isRecording ? "listening… tap done, then check your words before sending" : state.settings.talkHotkey ? "hold \(state.settings.talkShortcut.spoken) anywhere to talk  ·  return to send" : "return to send")
+                Text(voice.isRecording ? "listening… tap done, then check your words before sending" : state.settings.talkHotkey ? "hold \(state.settings.talkShortcut.display) anywhere to talk  ·  \(state.settings.typeShortcut.display) to type  ·  return to send" : "\(state.settings.typeShortcut.display) to type anywhere  ·  return to send")
                 if !state.hotkeyTrusted && state.settings.talkHotkey && !voice.isRecording {
                     Button("allow the hotkey") { state.allowHotkey() }.buttonStyle(LinkButtonStyle()).font(DS.Typography.caption)
                 }
@@ -248,6 +249,40 @@ struct ChatView: View {
         }
         .frame(maxWidth: 720).padding(.horizontal, 32).padding(.bottom, 18)
         .frame(maxWidth: .infinity)
+    }
+}
+
+extension ChatView {
+    var languageLabel: String {
+        guard state.settings.language == Dictation.auto else { return Dictation.short(state.settings.language) }
+        return voice.detected.map { "auto · " + Dictation.short($0) } ?? "auto"
+    }
+    var languageHelp: String {
+        if state.settings.language == Dictation.auto { return "Orbit listens for \(state.settings.listening.map(Dictation.name).joined(separator: ", ")) and keeps whichever you speak · click to switch" }
+        return state.settings.languages.count > 1 ? "Dictating in \(Dictation.name(state.settings.language)) · click to switch" : "Dictating in \(Dictation.name(state.settings.language)) · add languages in Settings"
+    }
+    /// Switch models without leaving the chat.
+    var modelMenu: some View {
+        let provider = state.settings.provider
+        let found = state.models[provider] ?? []
+        let current = found.first { $0.id == state.currentModel }?.name ?? (state.currentModel.isEmpty ? "default model" : state.currentModel)
+        return Menu {
+            if provider == .codex || provider == .claude { Button("CLI default") { state.chooseModel("") } }
+            ForEach(found) { option in
+                Button { state.chooseModel(option.id) } label: {
+                    if option.id == state.currentModel { Label(option.name, systemImage: "checkmark") } else { Text(option.name) }
+                }
+            }
+            if found.isEmpty { Text(state.loadingModels.contains(provider) ? "Looking for models…" : (state.modelErrors[provider] ?? "No models found")) }
+            Divider()
+            Button("Refresh List") { state.fetchModels(force: true) }
+            Button("Connections…") { state.selectedPage = "connections" }
+        } label: {
+            Text(current.lowercased()).font(.system(size: 12, weight: .medium)).foregroundStyle(DS.Colors.ink2)
+        }
+        .menuStyle(.borderlessButton).fixedSize().disabled(state.isBusy)
+        .help("Model for \(provider.title)")
+        .onAppear { state.fetchModels() }
     }
 }
 
@@ -273,7 +308,45 @@ struct ConnectionsView: View {
             }
             .frame(maxWidth: 720).padding(.horizontal, 32).padding(.vertical, 28)
             .frame(maxWidth: .infinity)
-        }.onAppear { if state.settings.provider == .custom { state.loadKey() } }
+        }.onAppear { if state.settings.provider == .custom { state.loadKey() }; state.fetchModels() }
+    }
+
+    /// The models this connection offers, fetched automatically; you can still type any id.
+    func models(placeholder: String, allowsDefault: Bool) -> some View {
+        let provider = state.settings.provider
+        let found = state.models[provider] ?? []
+        let loading = state.loadingModels.contains(provider)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(allowsDefault ? "model (optional)" : "model").font(DS.Typography.caption).foregroundStyle(DS.Colors.ink2)
+                Spacer()
+                Button(loading ? "looking…" : "refresh list") { state.fetchModels(force: true) }
+                    .buttonStyle(LinkButtonStyle()).disabled(loading)
+            }
+            if !found.isEmpty || allowsDefault {
+                FlowRow(spacing: 8) {
+                    if allowsDefault {
+                        Button("cli default") { state.chooseModel("") }
+                            .buttonStyle(PillButtonStyle(kind: state.currentModel.isEmpty ? .aqua : .silver, compact: true))
+                            .help("Use whatever model the CLI picks")
+                    }
+                    ForEach(found) { option in
+                        Button(option.name.lowercased()) { state.chooseModel(option.id) }
+                            .buttonStyle(PillButtonStyle(kind: state.currentModel == option.id ? .aqua : .silver, compact: true))
+                            .help([option.id, option.note].compactMap { $0 }.joined(separator: " · "))
+                    }
+                }
+            }
+            DSField(title: "or type a model id", text: Binding(get: { state.currentModel }, set: { state.currentModel = $0 }), placeholder: placeholder)
+            if let message = state.modelErrors[provider] {
+                Text(message.lowercased()).font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3).fixedSize(horizontal: false, vertical: true)
+            } else if provider == .claude {
+                Text("claude code doesn’t list models, so these are its aliases. each one always means the newest model in that family.")
+                    .font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3).fixedSize(horizontal: false, vertical: true)
+            } else if !found.isEmpty {
+                Text("\(found.count) models available on this connection.").font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3)
+            }
+        }
     }
 
     func card(_ provider: ProviderKind) -> some View {
@@ -301,30 +374,22 @@ struct ConnectionsView: View {
             switch state.settings.provider {
             case .codex:
                 DSField(title: "Codex executable", text: $state.settings.codexPath, placeholder: "/absolute/path/to/codex")
-                DSField(title: "Model (optional)", text: $state.settings.codexModel, placeholder: "use the cli’s default model")
+                models(placeholder: "use the cli’s default model", allowsDefault: true)
                 subscriptionHelp("Codex")
             case .claude:
                 DSField(title: "Claude Code executable", text: $state.settings.claudePath, placeholder: "/absolute/path/to/claude")
-                DSField(title: "Model (optional)", text: $state.settings.claudeModel, placeholder: "use the cli’s default model")
+                models(placeholder: "use the cli’s default model", allowsDefault: true)
                 subscriptionHelp("Claude Code")
             case .custom:
                 DSField(title: "API base URL", text: $state.settings.customBaseURL, placeholder: "https://your-provider.example/v1")
                     .onChange(of: state.settings.customBaseURL) { _, _ in state.apiKey = "" }
-                DSField(title: "Model", text: $state.settings.customModel, placeholder: "your provider’s model id")
                 DSField(title: "API key (optional for local servers)", text: $state.apiKey, placeholder: "stored in macOS keychain", secure: true)
+                models(placeholder: "your provider’s model id", allowsDefault: false)
                 Button("load saved key for this endpoint") { state.loadKey() }.buttonStyle(LinkButtonStyle())
                 note("uses chat completions. screen sharing needs a vision model. api billing is separate from cli subscriptions.")
             case .ollama:
                 DSField(title: "Ollama server", text: $state.settings.ollamaBaseURL, placeholder: "http://localhost:11434")
-                DSField(title: "Model", text: $state.settings.ollamaModel, placeholder: "choose an installed model")
-                HStack(spacing: 8) {
-                    Button(state.isLoadingModels ? "looking…" : "find installed models") { state.fetchModels() }
-                        .buttonStyle(PillButtonStyle(kind: .silver, compact: true)).disabled(state.isLoadingModels)
-                    if !state.localModels.isEmpty {
-                        Menu("choose model") { ForEach(state.localModels, id: \.self) { model in Button(model) { state.settings.ollamaModel = model; state.saveSettings() } } }
-                            .menuStyle(.borderlessButton).fixedSize().font(DS.Typography.label)
-                    }
-                }
+                models(placeholder: "choose an installed model", allowsDefault: false)
                 note("start ollama first. use a vision model for screenshots. nothing downloads automatically.")
             }
             Rectangle().fill(DS.Colors.hairline).frame(height: 1).padding(.vertical, 2)

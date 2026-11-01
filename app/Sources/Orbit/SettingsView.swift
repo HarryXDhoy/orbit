@@ -9,6 +9,30 @@ enum PrivacyPane: String {
     func open() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(rawValue)") { NSWorkspace.shared.open(url) }
     }
+    /// The TCC service name `tccutil` understands.
+    var service: String {
+        switch self {
+        case .screen: return "ScreenCapture"
+        case .microphone: return "Microphone"
+        case .speech: return "SpeechRecognition"
+        case .accessibility: return "Accessibility"
+        }
+    }
+    /// Forgets Orbit's saved entry for this permission and asks again. An entry saved for an older build
+    /// keeps showing as on in System Settings but never matches the current app, so toggling it does nothing.
+    func resetAndAsk() {
+        let reset = Process()
+        reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        reset.arguments = ["reset", service, Bundle.main.bundleIdentifier ?? "local.orbit.companion"]
+        try? reset.run(); reset.waitUntilExit()
+        switch self {
+        case .screen: _ = CGRequestScreenCaptureAccess()
+        case .accessibility: _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+        case .microphone: AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        case .speech: SFSpeechRecognizer.requestAuthorization { _ in }
+        }
+        open()
+    }
 }
 
 struct SettingsView: View {
@@ -47,8 +71,14 @@ struct SettingsView: View {
                 MacWindow(title: "dictation.prefs") {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("languages you talk in").font(DS.Typography.label).foregroundStyle(DS.Colors.ink)
-                        Text("tap one to use it now. the language button next to talk also flips between them.").font(DS.Typography.caption).foregroundStyle(DS.Colors.ink2)
+                        Text("tap one to use it now, or auto to let orbit tell them apart. the language button next to talk also flips between them.").font(DS.Typography.caption).foregroundStyle(DS.Colors.ink2)
                         FlowRow(spacing: 8) {
+                            Button {
+                                state.settings.language = Dictation.auto; state.saveSettings()
+                            } label: { Label("auto", systemImage: "sparkles") }
+                                .buttonStyle(PillButtonStyle(kind: state.settings.language == Dictation.auto ? .aqua : .silver, compact: true))
+                                .disabled(state.settings.languages.count < 2)
+                                .help(state.settings.languages.count < 2 ? "Add a second language to use auto-detect" : "Listen for your first \(Dictation.autoLimit) languages and keep whichever you speak")
                             ForEach(state.settings.languages, id: \.self) { id in
                                 HStack(spacing: 2) {
                                     Button(Dictation.name(id).lowercased()) { state.settings.language = id; state.saveSettings() }
@@ -66,6 +96,10 @@ struct SettingsView: View {
                             } label: { Label("add language", systemImage: "plus") }
                                 .menuStyle(.borderlessButton).fixedSize().font(DS.Typography.label)
                         }
+                        if state.settings.language == Dictation.auto {
+                            Text("auto listens in \(state.settings.listening.map { Dictation.name($0).lowercased() }.joined(separator: ", ")) at once and keeps the one that fits. \(state.settings.languages.count > Dictation.autoLimit ? "only your first \(Dictation.autoLimit) languages are used. " : "")replies come back in the language you spoke.")
+                                .font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3).fixedSize(horizontal: false, vertical: true)
+                        }
                     }.padding(20)
                 }
                 MacWindow(title: "keyboard.prefs") {
@@ -76,6 +110,10 @@ struct SettingsView: View {
                                 ShortcutRecorder(shortcut: $state.settings.talkShortcut, fallback: .talkDefault, allowModifiersOnly: true, hotkeys: state.hotkeys) { state.saveSettings() }
                                     .disabled(!state.settings.talkHotkey)
                             }
+                        }
+                        divider
+                        row("type to orbit", note: "opens a box by your cursor in any app. return sends, esc closes") {
+                            ShortcutRecorder(shortcut: $state.settings.typeShortcut, fallback: .typeDefault, allowModifiersOnly: false, hotkeys: state.hotkeys) { state.saveSettings() }
                         }
                         divider
                         row("clear drawings", note: nil) {
@@ -99,6 +137,8 @@ struct SettingsView: View {
                         permission(.speech, "speech recognition", note: "to turn your voice into words")
                         divider
                         permission(.accessibility, "accessibility", note: "to notice your shortcuts while other apps are in front")
+                        Text("turned it on and it still says not allowed? use reset & ask again, turn orbit on in the list that opens, then relaunch.")
+                            .font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10)
                         HStack {
                             Spacer()
                             Button("relaunch orbit") { state.relaunch() }.buttonStyle(PillButtonStyle(kind: .silver, compact: true))
@@ -133,8 +173,9 @@ struct SettingsView: View {
 
     private var clash: String? {
         let s = state.settings
-        if s.clearShortcut == s.openShortcut { return "clear drawings and open orbit use the same shortcut." }
-        if s.talkHotkey, s.talkShortcut == s.clearShortcut || s.talkShortcut == s.openShortcut { return "talk to orbit shares a shortcut with another command." }
+        let keyed = [s.typeShortcut, s.clearShortcut, s.openShortcut]
+        if Set(keyed.map(\.display)).count < keyed.count { return "two commands use the same shortcut." }
+        if s.talkHotkey, keyed.contains(s.talkShortcut) { return "talk to orbit shares a shortcut with another command." }
         return nil
     }
 
@@ -170,6 +211,9 @@ struct SettingsView: View {
                 StatusPill(text: permissions[pane] == true ? "allowed" : "not allowed", live: permissions[pane] == true)
                 if permissions[pane] != true {
                     Button("open settings") { pane == .accessibility ? state.allowHotkey() : pane.open() }.buttonStyle(LinkButtonStyle())
+                    Button("reset & ask again") { pane.resetAndAsk(); if pane == .accessibility { state.allowHotkey() } }
+                        .buttonStyle(LinkButtonStyle())
+                        .help("Already turned on but still not allowed? This clears Orbit’s old entry so you can turn it on fresh.")
                 }
             }
         }

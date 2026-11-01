@@ -11,6 +11,7 @@ struct Shortcut: Codable, Equatable {
     static let talkDefault = Shortcut(keyCode: nil, key: nil, flags: [.control, .option])
     static let clearDefault = Shortcut(keyCode: 40, key: "K", flags: [.control, .command])
     static let openDefault = Shortcut(keyCode: 31, key: "O", flags: [.control, .command])
+    static let typeDefault = Shortcut(keyCode: 17, key: "T", flags: [.control, .command])
 
     init(keyCode: UInt16?, key: String?, flags: NSEvent.ModifierFlags) {
         self.keyCode = keyCode; self.key = key; modifiers = flags.intersection(Self.relevant).rawValue
@@ -54,6 +55,7 @@ final class Hotkeys {
     var talk = Shortcut.talkDefault
     var clear = Shortcut.clearDefault
     var open = Shortcut.openDefault
+    var type = Shortcut.typeDefault
     var talkEnabled = true
     /// Set while a shortcut recorder is listening, so typing a new shortcut doesn't fire the old one.
     var paused = false
@@ -62,6 +64,7 @@ final class Hotkeys {
     var onTalkCancel: () -> Void = {}
     var onClear: () -> Void = {}
     var onOpen: () -> Void = {}
+    var onType: () -> Void = {}
     private(set) var isTalking = false
     private var monitors: [Any] = []
     private var globalInstalled = false
@@ -123,6 +126,7 @@ final class Hotkeys {
             }
             if let code = clear.keyCode, event.keyCode == code, mods == clear.flags { onClear(); return true }
             if let code = open.keyCode, event.keyCode == code, mods == open.flags { onOpen(); return true }
+            if let code = type.keyCode, event.keyCode == code, mods == type.flags { onType(); return true }
             return false
         case .keyUp:
             if isTalking, let code = talk.keyCode, event.keyCode == code { isTalking = false; onTalkEnd(); return true }
