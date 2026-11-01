@@ -50,10 +50,16 @@ final class QuickTypeController {
         panel.setFrameOrigin(origin)
         panel.makeKeyAndOrderFront(nil)
         model.focus = UUID()
+        SoundFX.shared.play(.open)
     }
-    func hide() {
-        guard panel.isVisible else { return }
+    private var hiding = false
+    func hide(quietly: Bool = false) {
+        // Ordering out resigns key, which asks to hide again; one close is enough.
+        guard panel.isVisible, !hiding else { return }
+        hiding = true
+        defer { hiding = false }
         panel.orderOut(nil)
+        if !quietly { SoundFX.shared.play(.close) }
     }
     func toggle() { isVisible ? hide() : show() }
 
@@ -61,7 +67,8 @@ final class QuickTypeController {
         let text = model.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         model.text = ""
-        hide() // out of the way before Orbit looks at the screen
+        hide(quietly: true) // out of the way before Orbit looks at the screen
+        SoundFX.shared.play(.send)
         onSend(text)
     }
 }

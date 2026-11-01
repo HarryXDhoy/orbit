@@ -35,6 +35,12 @@ final class AppState: ObservableObject {
     private var heard = ""
     let client = ProviderClient()
     let speaker = AVSpeechSynthesizer()
+    let speechFeed = SpeechFeed()
+    /// A walkthrough step waiting for the click on the control Orbit ringed.
+    private var waitingTarget: (rect: CGRect, label: String, chat: UUID?, spoken: Bool)?
+    private var walkthroughSteps = 0
+    private var clickMonitors: [Any] = []
+    @Published private(set) var isDictating = false
     var showWindow: (() -> Void)?
     private var task: Task<Void, Never>?
 
@@ -58,11 +64,21 @@ final class AppState: ObservableObject {
         overlay.model.ink = settings.ink
         overlay.model.isSpeaking = { [weak self] in self?.speaker.isSpeaking ?? false }
         SoundFX.shared.enabled = settings.soundEffects
+        overlay.model.showCaptions = settings.showCaptions
+        speaker.delegate = speechFeed
+        speechFeed.onLine = { [weak self] line in self?.overlay.model.spokenLine = line }
         hotkeys.talk = settings.talkShortcut
         hotkeys.clear = settings.clearShortcut
         hotkeys.open = settings.openShortcut
         hotkeys.type = settings.typeShortcut
         hotkeys.talkEnabled = settings.talkHotkey
+        hotkeys.dictate = settings.dictateShortcut
+        hotkeys.dictateEnabled = settings.dictateEnabled
+        hotkeys.doubleControl = settings.doubleControl
+        hotkeys.onDictateStart = { [weak self] in self?.beginDictation() }
+        hotkeys.onDictateEnd = { [weak self] in self?.endDictation() }
+        hotkeys.onDictateCancel = { [weak self] in self?.cancelDictation() }
+        hotkeys.onEscape = { [weak self] in self?.escape() }
         hotkeys.onTalkStart = { [weak self] in self?.beginTalk() }
         hotkeys.onTalkEnd = { [weak self] in self?.endTalk() }
         hotkeys.onTalkCancel = { [weak self] in self?.cancelTalk() }
@@ -101,7 +117,87 @@ final class AppState: ObservableObject {
         quickType.toggle()
     }
     func cancelTalk() {
-        guard overlay.model.mood == .listening else { return }
+        guard overlay.model.mood == .listening, !isDictating else { return }
+        voice.stop(); heard = ""
+        overlay.model.pointing = false; _ = overlay.model.takeGesture()
+        overlay.model.mood = .idle; overlay.model.caption = nil
+    }
+    /// Escape takes Orbit's drawings, bubble and voice off the screen and ends a walkthrough.
+    func escape() {
+        let model = overlay.model
+        let showing = !model.strokes.isEmpty || model.sculpture != nil || model.caption != nil || speaker.isSpeaking || waitingTarget != nil
+        guard showing, model.mood != .listening else { return }
+        stopWalkthrough()
+        speaker.stopSpeaking(at: .immediate)
+        if !model.strokes.isEmpty || model.sculpture != nil { SoundFX.shared.play(.clear) }
+        model.clear(); model.say(nil)
+    }
+
+    // MARK: Walkthroughs
+
+    /// Waits for a click inside the control the reply ringed, then asks for the next step with a fresh look.
+    private func awaitClick(on rect: CGRect, label: String, chat: UUID?, spoken: Bool) {
+        removeClickMonitors()
+        waitingTarget = (rect, label, chat, spoken)
+        let handler: (NSEvent) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.clicked(at: NSEvent.mouseLocation) }
+        }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: handler) { clickMonitors.append(global) }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { event in handler(event); return event }) { clickMonitors.append(local) }
+    }
+    private func clicked(at point: CGPoint) {
+        guard let step = waitingTarget, step.rect.insetBy(dx: -8, dy: -8).contains(point) else { return }
+        removeClickMonitors()
+        waitingTarget = nil
+        SoundFX.shared.play(.tick)
+        overlay.model.clear()
+        guard walkthroughSteps < 15 else { walkthroughSteps = 0; return }
+        Task { [self] in
+            try? await Task.sleep(nanoseconds: 700_000_000) // let the app react to the click before looking again
+            guard currentID == step.chat, !isBusy else { return }
+            send("Done: I clicked “\(step.label)”. What's next?", spoken: step.spoken, continuing: true)
+        }
+    }
+    func stopWalkthrough() {
+        removeClickMonitors()
+        waitingTarget = nil
+        walkthroughSteps = 0
+    }
+    private func removeClickMonitors() {
+        clickMonitors.forEach { NSEvent.removeMonitor($0) }
+        clickMonitors = []
+    }
+
+    // MARK: Dictation anywhere
+
+    /// Hold the dictation shortcut in any app and speak; your words go where the text cursor is.
+    func beginDictation() {
+        guard !isBusy, !voice.isRecording else { return }
+        isDictating = true
+        speaker.stopSpeaking(at: .immediate)
+        heard = ""
+        overlay.model.mood = .listening; overlay.model.caption = nil
+        Task { [self] in
+            await voice.start(languages: settings.listening, onText: { [weak self] text in self?.heard = text; self?.overlay.model.caption = text },
+                              onError: { [weak self] error in self?.error = error; self?.isDictating = false; self?.overlay.model.mood = .idle })
+        }
+    }
+    func endDictation() {
+        guard isDictating else { return }
+        Task { [self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let final = await voice.finish()
+            isDictating = false
+            overlay.model.mood = .idle; overlay.model.caption = nil
+            let text = (final.isEmpty ? heard : final).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            if TextInserter.insert(text) { SoundFX.shared.play(.tick) }
+            else { error = "Turn on Accessibility for Orbit so dictation can type into other apps." }
+        }
+    }
+    func cancelDictation() {
+        guard isDictating else { return }
+        isDictating = false
         voice.stop(); heard = ""
         overlay.model.mood = .idle; overlay.model.caption = nil
     }
@@ -110,10 +206,12 @@ final class AppState: ObservableObject {
         guard !isBusy, !voice.isRecording else { return }
         speaker.stopSpeaking(at: .immediate)
         heard = ""
+        stopWalkthrough()
         overlay.model.clear(); overlay.model.mood = .listening; overlay.model.caption = nil
+        _ = overlay.model.takeGesture(); overlay.model.pointing = true
         Task { [self] in
             await voice.start(languages: settings.listening, onText: { [weak self] text in self?.heard = text; self?.overlay.model.caption = text },
-                              onError: { [weak self] error in self?.error = error; self?.overlay.model.mood = .idle })
+                              onError: { [weak self] error in self?.error = error; self?.overlay.model.mood = .idle; self?.overlay.model.pointing = false })
         }
     }
     func endTalk() {
@@ -121,9 +219,11 @@ final class AppState: ObservableObject {
         Task { [self] in
             try? await Task.sleep(nanoseconds: 350_000_000) // let the last words land
             let final = await voice.finish()
+            let gesture = overlay.model.takeGesture()
+            overlay.model.pointing = false
             overlay.model.mood = .idle; overlay.model.caption = nil
             let text = (final.isEmpty ? heard : final).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { send(text, spoken: true) }
+            if !text.isEmpty { send(text, spoken: true, gesture: gesture) }
         }
     }
     func selectProvider(_ provider: ProviderKind) {
@@ -154,9 +254,12 @@ final class AppState: ObservableObject {
             catch { self.error = error.localizedDescription }
         }
     }
-    func send(_ spokenText: String? = nil, spoken: Bool = false) {
+    /// `gesture` is the pointer's path while talking; `continuing` is the next step of a walkthrough.
+    func send(_ spokenText: String? = nil, spoken: Bool = false, gesture: [CGPoint] = [], continuing: Bool = false) {
         let text = (spokenText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !isBusy, !text.isEmpty else { return }
+        if continuing { walkthroughSteps += 1 } else { stopWalkthrough() }
+        let typed = !spoken
         voice.stop(); speaker.stopSpeaking(at: .immediate)
         let configuration = settings
         let key = configuration.provider == .custom ? APIKeyStore.read(endpoint: configuration.customBaseURL) : ""
@@ -167,10 +270,11 @@ final class AppState: ObservableObject {
         overlay.model.clear(); overlay.model.say(nil); overlay.model.mood = .thinking
         task = Task {
             defer { isBusy = false; busyID = nil; task = nil; overlay.model.mood = .idle }
-            if image == nil, configuration.seesScreen {
+            if image == nil, configuration.seesScreen || continuing {
                 do { image = try await ScreenCapture.capture() }
                 catch { self.error = error.localizedDescription }
             }
+            if !gesture.isEmpty, let shot = image { image = shot.marked(with: gesture, ink: configuration.ink.nsColor) }
             let chatID = append(ChatMessage(role: "user", text: text, hadImage: image != nil), to: startedIn)
             if currentID == startedIn { currentID = chatID }
             busyID = chatID
@@ -188,6 +292,12 @@ final class AppState: ObservableObject {
                     let sampler = ToneSampler(image.image)
                     overlay.model.play(parsed.marks, frame: image.frame, tone: { sampler?.tone(in: $0) ?? .dark })
                 }
+                if image != nil, let target = overlay.model.strokes.last(where: { $0.kind == .target }) {
+                    awaitClick(on: target.box, label: target.label ?? "that", chat: chatID, spoken: spoken)
+                } else {
+                    walkthroughSteps = 0
+                }
+                if typed, settings.showCompanion { SoundFX.shared.play(.receive) }
                 if let sculpture = built.sculpture {
                     // 3D models don't need a screenshot; without one they go on the screen under the cursor.
                     let mouse = NSEvent.mouseLocation
@@ -294,10 +404,16 @@ final class AppState: ObservableObject {
         speaker.stopSpeaking(at: .immediate)
         let utterance = AVSpeechUtterance(string: text)
         utterance.rate = 0.5
-        if let language = NLLanguageRecognizer.dominantLanguage(for: text)?.rawValue,
-           let voice = AVSpeechSynthesisVoice(language: language) ?? AVSpeechSynthesisVoice.speechVoices().first(where: { $0.language.hasPrefix(language) }) {
-            utterance.voice = voice
-        }
+        // Speak in the language of the reply, with the voice picked for it in Settings.
+        let language = NLLanguageRecognizer.dominantLanguage(for: text)?.rawValue ?? "en"
+        utterance.voice = Voices.voice(for: language, chosen: settings.voices)
+        speaker.speak(utterance)
+    }
+    func previewVoice(_ voice: AVSpeechSynthesisVoice) {
+        speaker.stopSpeaking(at: .immediate)
+        let utterance = AVSpeechUtterance(string: Voices.sample(for: voice.language))
+        utterance.rate = 0.5
+        utterance.voice = voice
         speaker.speak(utterance)
     }
     func newChat() { currentID = nil; attachment = nil; error = nil }

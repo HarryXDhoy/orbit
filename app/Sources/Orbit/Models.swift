@@ -85,6 +85,17 @@ struct ConnectionSettings: Codable {
     /// The colour Orbit draws in.
     var ink: Ink { get { inkColor ?? .blue } set { inkColor = newValue } }
     var soundEffects: Bool { get { sounds ?? true } set { sounds = newValue } }
+    var dictateKeys: Shortcut?
+    var dictateHotkey: Bool?
+    var doubleControlTap: Bool?
+    var captions: Bool?
+    /// Voice identifier per language code ("ko", "en"…).
+    var voiceChoices: [String: String]?
+    var dictateShortcut: Shortcut { get { dictateKeys ?? .dictateDefault } set { dictateKeys = newValue } }
+    var dictateEnabled: Bool { get { dictateHotkey ?? true } set { dictateHotkey = newValue } }
+    var doubleControl: Bool { get { doubleControlTap ?? true } set { doubleControlTap = newValue } }
+    var showCaptions: Bool { get { captions ?? false } set { captions = newValue } }
+    var voices: [String: String] { get { voiceChoices ?? [:] } set { voiceChoices = newValue } }
     /// How long drawings stay on screen; 0 keeps them until cleared.
     var keepDrawings: Double { get { drawingSeconds ?? 30 } set { drawingSeconds = newValue } }
 }

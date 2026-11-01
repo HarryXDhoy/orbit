@@ -9,6 +9,14 @@ final class SoundFX {
 
     enum Effect {
         case pen(Double), marker(Double), pop, badge, press, ping, clear
+        /// A click landed on the control Orbit was waiting for, or dictated words went in.
+        case tick
+        /// Something worked out.
+        case cheer
+        /// The typing box opening and closing, a message going out, a reply coming back.
+        case open, close, send, receive
+        /// The screen dimming around a spotlight.
+        case dim
     }
 
     var enabled = true
@@ -29,6 +37,13 @@ final class SoundFX {
         case .press: buffer = cached("press") { Self.thump() }
         case .ping: buffer = cached("ping") { Self.ping() }
         case .clear: buffer = cached("clear") { Self.whoosh() }
+        case .tick: buffer = cached("tick") { Self.blip(from: 2400, to: 1900, seconds: 0.035, level: 0.16) }
+        case .cheer: buffer = cached("cheer") { Self.chime([660, 880, 1320], step: 0.07, level: 0.14) }
+        case .open: buffer = cached("open") { Self.blip(from: 620, to: 980, seconds: 0.06, level: 0.12) }
+        case .close: buffer = cached("close") { Self.blip(from: 900, to: 560, seconds: 0.06, level: 0.1) }
+        case .send: buffer = cached("send") { Self.chime([740, 1110], step: 0.05, level: 0.11) }
+        case .receive: buffer = cached("receive") { Self.chime([990, 740], step: 0.06, level: 0.11) }
+        case .dim: buffer = cached("dim") { Self.whoosh() }
         }
         guard let buffer else { return }
         let player = players[next]
@@ -80,6 +95,21 @@ final class SoundFX {
             phase += 2 * .pi * f / rate
             let env = min(1, t / 0.003) * exp(-t / (seconds * 0.3))
             return Float(sin(phase) + 0.25 * sin(phase * 2)) * Float(env) * level
+        }
+    }
+
+    /// A few soft bell notes in a row.
+    static func chime(_ notes: [Double], step: Double, level: Float) -> AVAudioPCMBuffer? {
+        let ring = 0.18
+        return buffer(seconds: step * Double(notes.count - 1) + ring) { _, t in
+            var out = 0.0
+            for (i, f) in notes.enumerated() {
+                let start = step * Double(i)
+                guard t >= start else { continue }
+                let u = t - start
+                out += (sin(2 * .pi * f * u) + 0.3 * sin(2 * .pi * f * 2 * u)) * min(1, u / 0.003) * exp(-u / 0.06)
+            }
+            return Float(out) * level
         }
     }
 

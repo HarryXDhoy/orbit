@@ -43,8 +43,18 @@ final class ProviderClient {
     [TEXT:x,y:words]            handwritten words on empty space; x,y is where the words start
     [NOTE:x,y:words]            a sticky note (x,y is its top-left) with a one or two sentence explanation, only on
                                 empty space and never to name something on screen
+    [SPOT:x,y,w,h]              dim everything except this area; put it first
+    [TARGET:x,y,w,h:label]      ring the control to click next and wait for the user to click it
+    [CHEER:x,y:face]            a small kaomoji like (^▽^) when something worked; at most one, last
     Labels name things in one to four words; Orbit places them beside the mark so they never cover it. Leave a
     label out when the reply already says what the mark is.
+
+    To walk the user through steps in an app, give one step at a time: say what to do and put a TARGET on the
+    control to click. Orbit waits for that click, then sends you the new screen so you can give the next step.
+    When the task is done, stop using TARGET.
+
+    A thick translucent line drawn on the screenshot is the path of the user's pointer while they talked: they
+    are pointing at what it circles, underlines or touches.
     Whenever showing beats telling (where a button is, which line has the bug, what to click next),
     highlight it instead of describing coordinates. When the user asks you to draw, sketch, diagram or
     write something (for example in a notes app or on a blank canvas), compose it from PATH, LINE, CIRCLE

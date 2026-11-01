@@ -12,6 +12,7 @@ struct Shortcut: Codable, Equatable {
     static let clearDefault = Shortcut(keyCode: 40, key: "K", flags: [.control, .command])
     static let openDefault = Shortcut(keyCode: 31, key: "O", flags: [.control, .command])
     static let typeDefault = Shortcut(keyCode: 17, key: "T", flags: [.control, .command])
+    static let dictateDefault = Shortcut(keyCode: nil, key: nil, flags: [.control, .shift])
 
     init(keyCode: UInt16?, key: String?, flags: NSEvent.ModifierFlags) {
         self.keyCode = keyCode; self.key = key; modifiers = flags.intersection(Self.relevant).rawValue
@@ -56,7 +57,11 @@ final class Hotkeys {
     var clear = Shortcut.clearDefault
     var open = Shortcut.openDefault
     var type = Shortcut.typeDefault
+    var dictate = Shortcut.dictateDefault
     var talkEnabled = true
+    var dictateEnabled = true
+    /// Tap control twice to open the typing box.
+    var doubleControl = true
     /// Set while a shortcut recorder is listening, so typing a new shortcut doesn't fire the old one.
     var paused = false
     var onTalkStart: () -> Void = {}
@@ -65,7 +70,16 @@ final class Hotkeys {
     var onClear: () -> Void = {}
     var onOpen: () -> Void = {}
     var onType: () -> Void = {}
+    var onDictateStart: () -> Void = {}
+    var onDictateEnd: () -> Void = {}
+    var onDictateCancel: () -> Void = {}
+    /// Escape with nothing else held; never swallowed, so the app in front still gets it.
+    var onEscape: () -> Void = {}
     private(set) var isTalking = false
+    private(set) var isDictating = false
+    private var lastMods: NSEvent.ModifierFlags = []
+    private var controlDownAt: Date?
+    private var lastControlTap: Date?
     /// When the type modifiers went down alone; letting go soon after with no key in between opens the box.
     private var typeArmed: Date?
     static let tapLimit: TimeInterval = 0.8
@@ -110,12 +124,20 @@ final class Hotkeys {
         let mods = event.modifierFlags.intersection(Shortcut.relevant)
         switch event.type {
         case .flagsChanged:
+            defer { lastMods = mods }
             if talkEnabled, talk.keyCode == nil {
                 let held = mods == talk.flags
                 if held && !isTalking { isTalking = true; onTalkStart() }
                 else if !held && isTalking { isTalking = false; onTalkEnd() }
             } else if isTalking, mods != talk.flags {
                 isTalking = false; onTalkEnd()
+            }
+            if dictateEnabled, dictate.keyCode == nil {
+                let held = mods == dictate.flags
+                if held && !isDictating { isDictating = true; onDictateStart() }
+                else if !held && isDictating { isDictating = false; onDictateEnd() }
+            } else if isDictating, mods != dictate.flags {
+                isDictating = false; onDictateEnd()
             }
             // A modifiers-only type shortcut fires on a tap: press them together and let go.
             if type.keyCode == nil, !type.flags.isEmpty {
@@ -125,16 +147,34 @@ final class Hotkeys {
                     if mods.isSubset(of: type.flags), Date().timeIntervalSince(armed) < Self.tapLimit { onType() }
                 }
             }
+            // Two quick taps of control alone open the typing box too.
+            if doubleControl {
+                let now = Date()
+                if mods == [.control], lastMods.isEmpty { controlDownAt = now }
+                else if mods.isEmpty, lastMods == [.control], let down = controlDownAt, now.timeIntervalSince(down) < 0.3 {
+                    controlDownAt = nil
+                    if let tap = lastControlTap, now.timeIntervalSince(tap) < 0.45 { lastControlTap = nil; onType() }
+                    else { lastControlTap = now }
+                } else if !mods.isEmpty, mods != [.control] {
+                    controlDownAt = nil; lastControlTap = nil
+                }
+            }
             return false
         case .keyDown:
             typeArmed = nil // the modifiers were part of another shortcut, like ⌃⌘K
+            controlDownAt = nil; lastControlTap = nil
             if isTalking, talk.keyCode == nil {
                 // The talk modifiers were part of some other shortcut; don't treat it as talking.
                 isTalking = false; onTalkCancel()
             }
-            guard !event.isARepeat else { return isTalking && event.keyCode == talk.keyCode }
+            if isDictating, dictate.keyCode == nil { isDictating = false; onDictateCancel() }
+            if event.keyCode == 53, mods.isEmpty, !event.isARepeat { onEscape() }
+            guard !event.isARepeat else { return (isTalking && event.keyCode == talk.keyCode) || (isDictating && event.keyCode == dictate.keyCode) }
             if talkEnabled, let code = talk.keyCode, event.keyCode == code, mods == talk.flags {
                 isTalking = true; onTalkStart(); return true
+            }
+            if dictateEnabled, let code = dictate.keyCode, event.keyCode == code, mods == dictate.flags {
+                isDictating = true; onDictateStart(); return true
             }
             if let code = clear.keyCode, event.keyCode == code, mods == clear.flags { onClear(); return true }
             if let code = open.keyCode, event.keyCode == code, mods == open.flags { onOpen(); return true }
@@ -142,6 +182,7 @@ final class Hotkeys {
             return false
         case .keyUp:
             if isTalking, let code = talk.keyCode, event.keyCode == code { isTalking = false; onTalkEnd(); return true }
+            if isDictating, let code = dictate.keyCode, event.keyCode == code { isDictating = false; onDictateEnd(); return true }
             return false
         default:
             return false

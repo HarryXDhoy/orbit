@@ -32,6 +32,7 @@ enum Ink: String, CaseIterable, Codable {
         }
     }
     var color: Color { Color(hex: hex) }
+    var nsColor: NSColor { NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: 1) }
     /// Lighter at the top, a dark rim, dark words.
     var gel: (top: Color, mid: Color, low: Color, rim: Color) {
         switch self {
@@ -71,6 +72,15 @@ final class OverlayModel: ObservableObject {
     private var captionUntil = Date.distantPast
     /// Keeps the reply bubble up while Orbit is still reading it aloud.
     var isSpeaking: () -> Bool = { false }
+    /// While you hold the talk shortcut, the pointer leaves a fading line so you can circle what you mean.
+    var pointing = false
+    @Published var trail: [TrailPoint] = []
+    /// The whole pointer path while talking, drawn onto the screenshot so the model sees what you pointed at.
+    private(set) var gesture: [CGPoint] = []
+    static let trailLife: TimeInterval = 1.6
+    /// The sentence being read aloud, shown as a caption when captions are on.
+    @Published var spokenLine: String?
+    var showCaptions = false
     static let offset = CGPoint(x: 22, y: -24)
     /// A breath between strokes, like a hand lifting the pen.
     static let gap = 0.08
@@ -133,8 +143,16 @@ final class OverlayModel: ObservableObject {
     /// Room the bubble needs to the right of and below the buddy.
     static let bubbleRoom = CGSize(width: 360, height: 190)
 
+    func takeGesture() -> [CGPoint] {
+        defer { gesture = [] }
+        return gesture
+    }
+
     private func sound(for stroke: Stroke) {
         switch stroke.kind {
+        case .target: SoundFX.shared.play(.ping)
+        case .spotlight: SoundFX.shared.play(.dim)
+        case .cheer: SoundFX.shared.play(.cheer)
         case .pen, .frame: SoundFX.shared.play(.pen(stroke.duration))
         case .text: SoundFX.shared.play(.pen(stroke.duration * 0.9))
         case .marker: SoundFX.shared.play(.marker(stroke.duration))
@@ -176,6 +194,17 @@ final class OverlayModel: ObservableObject {
                 if index >= placedParts { placedParts = index + 1; SoundFX.shared.play(.pop) }
                 building = Sculpture.screenPoint(of: model.parts[index], in: sculptureFrame)
             }
+        }
+        // Point while you talk: keep the pointer's path, and let the visible line fade from its tail.
+        if pointing, mood == .listening {
+            let mouse = NSEvent.mouseLocation
+            if let last = trail.last?.point, hypot(mouse.x - last.x, mouse.y - last.y) < 2 {} else {
+                trail.append(TrailPoint(point: mouse, time: now))
+                if gesture.count < 1200 { gesture.append(mouse) }
+            }
+        }
+        if let first = trail.first, now.timeIntervalSince(first.time) > Self.trailLife {
+            trail.removeAll { now.timeIntervalSince($0.time) > Self.trailLife }
         }
         // The reply stays while its drawings are up or it's being read aloud.
         if mood == .idle, caption != nil, now > captionUntil, strokes.isEmpty, sculpture == nil, !isSpeaking() { caption = nil }
@@ -255,8 +284,15 @@ struct OverlayView: View {
                 let fraction = model.fraction(index)
                 if fraction > 0 { StrokeView(stroke: stroke, fraction: fraction, ink: model.ink, frame: frame) }
             }
+            if !model.trail.isEmpty { TrailView(points: model.trail, ink: model.ink, frame: frame) }
             if frame.insetBy(dx: -60, dy: -60).contains(model.buddy) { buddy.position(local(model.buddy)) }
+            if model.showCaptions, let line = model.spokenLine, frame.contains(model.buddy) {
+                CaptionBar(text: line).frame(maxWidth: min(900, frame.width - 80))
+                    .position(x: frame.width / 2, y: frame.height - 70)
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.2), value: model.spokenLine)
         .frame(width: frame.width, height: frame.height, alignment: .topLeading)
         .allowsHitTesting(false)
     }
@@ -372,6 +408,20 @@ struct StrokeView: View {
                 .position(x: r.midX, y: r.midY)
         case .point:
             TargetRing(ink: ink).position(local(CGPoint(x: stroke.box.midX, y: stroke.box.midY)))
+        case .target:
+            let r = local(stroke.box)
+            ClickTarget(ink: ink, radius: stroke.radius, fraction: fraction)
+                .frame(width: r.width, height: r.height).position(x: r.midX, y: r.midY)
+        case .spotlight:
+            let hole = local(stroke.box)
+            Path { p in
+                p.addRect(CGRect(origin: .zero, size: frame.size))
+                p.addRoundedRect(in: hole, cornerSize: CGSize(width: stroke.radius, height: stroke.radius), style: .continuous)
+            }
+            .fill(Color.black.opacity(0.42 * fraction), style: FillStyle(eoFill: true))
+        case .cheer:
+            let r = local(stroke.box)
+            GelLabel(text: stroke.text ?? "", ink: ink, size: 15).frame(width: r.width, height: r.height).position(x: r.midX, y: r.midY)
         }
     }
 
@@ -428,10 +478,11 @@ struct GelSurface<S: InsettableShape>: View {
 struct GelLabel: View {
     let text: String
     let ink: Ink
+    var size: CGFloat = 12
     @State private var shown = false
 
     var body: some View {
-        Text(text).font(.system(size: 12, weight: .semibold)).foregroundStyle(Color(hex: 0x15171C)).lineLimit(1).fixedSize()
+        Text(text).font(.system(size: size, weight: .semibold)).foregroundStyle(Color(hex: 0x15171C)).lineLimit(1).fixedSize()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(GelSurface(ink: ink, shape: Capsule()))
             .scaleEffect(shown ? 1 : 0.6).opacity(shown ? 1 : 0)
@@ -538,5 +589,69 @@ struct Tape: Shape {
             for i in stride(from: teeth - 1, through: 0, by: -1) { p.addLine(to: CGPoint(x: r.minX + (i % 2 == 1 ? 3 : 0), y: r.minY + step * CGFloat(i))) }
             p.closeSubpath()
         }
+    }
+}
+
+struct TrailPoint: Equatable {
+    var point: CGPoint
+    var time: Date
+}
+
+/// The pointer's path while you talk, fading from its oldest end.
+struct TrailView: View {
+    let points: [TrailPoint]
+    let ink: Ink
+    let frame: CGRect
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, _ in
+                let now = timeline.date
+                for (a, b) in zip(points, points.dropFirst()) {
+                    let age = now.timeIntervalSince(a.time)
+                    let alpha = max(0, 1 - age / OverlayModel.trailLife)
+                    guard alpha > 0 else { continue }
+                    var segment = Path()
+                    segment.move(to: CGPoint(x: a.point.x - frame.minX, y: frame.maxY - a.point.y))
+                    segment.addLine(to: CGPoint(x: b.point.x - frame.minX, y: frame.maxY - b.point.y))
+                    context.stroke(segment, with: .color(ink.color.opacity(0.55 * alpha)), style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
+                }
+            }
+        }
+        .frame(width: frame.width, height: frame.height)
+        .allowsHitTesting(false)
+    }
+}
+
+/// A control Orbit is waiting for you to click: a solid ring with a slow pulse.
+struct ClickTarget: View {
+    let ink: Ink
+    let radius: CGFloat
+    let fraction: CGFloat
+    @State private var pulse = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        ZStack {
+            shape.stroke(ink.color.opacity(0.5), lineWidth: 2)
+                .scaleEffect(pulse ? 1.12 : 1).opacity(pulse ? 0 : 0.9)
+            shape.trim(from: 0, to: fraction)
+                .stroke(ink.color, style: StrokeStyle(lineWidth: Stroke.pen, lineCap: .round, lineJoin: .round))
+                .shadow(color: ink.color.opacity(0.65), radius: 6)
+        }
+        .onAppear { withAnimation(.easeOut(duration: 1.3).repeatForever(autoreverses: false)) { pulse = true } }
+    }
+}
+
+/// What Orbit is saying right now, at the bottom of the screen.
+struct CaptionBar: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 17, weight: .medium)).foregroundStyle(.white)
+            .multilineTextAlignment(.center).lineSpacing(3)
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .background(Color(hex: 0x15171C).opacity(0.82), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .fixedSize(horizontal: false, vertical: true)
     }
 }

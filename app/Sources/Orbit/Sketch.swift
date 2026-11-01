@@ -17,11 +17,17 @@ enum SketchMark: Equatable {
     case check(CGPoint)
     case cross(CGPoint)
     case note(CGPoint, String)
+    /// A control to click; Orbit waits for the click before the next step of a walkthrough.
+    case target(CGRect, String?)
+    /// Dims everything except this area.
+    case spotlight(CGRect)
+    /// A little face when something worked.
+    case cheer(CGPoint, String)
 
     var label: String? {
         switch self {
         case .point(_, let l): return l
-        case .box(_, let l), .circle(_, _, let l), .arrow(_, _, let l): return l
+        case .box(_, let l), .circle(_, _, let l), .arrow(_, _, let l), .target(_, let l): return l
         default: return nil
         }
     }
@@ -31,7 +37,7 @@ enum SketchMark: Equatable {
 enum SketchScript {
     static let maxMarks = 40
     static let maxPathPoints = 160
-    private static let regex = try! NSRegularExpression(pattern: #"\[(POINT|BOX|CIRCLE|ARROW|LINE|PATH|TEXT|UNDERLINE|HIGHLIGHT|NUM|CHECK|CROSS|NOTE):([^\]\n]{1,4000})\]"#)
+    private static let regex = try! NSRegularExpression(pattern: #"\[(POINT|BOX|CIRCLE|ARROW|LINE|PATH|TEXT|UNDERLINE|HIGHLIGHT|NUM|CHECK|CROSS|NOTE|TARGET|SPOT|CHEER):([^\]\n]{1,4000})\]"#)
 
     static func parse(_ text: String) -> (text: String, marks: [SketchMark]) {
         let range = NSRange(text.startIndex..., in: text)
@@ -74,6 +80,9 @@ enum SketchScript {
         case ("CHECK", 2): return .check(p)
         case ("CROSS", 2): return .cross(p)
         case ("NOTE", 2): return words.isEmpty ? nil : .note(p, String(words.prefix(160)))
+        case ("TARGET", 4): return n[2] > 0 && n[3] > 0 ? .target(CGRect(x: n[0], y: n[1], width: n[2], height: n[3]), tag) : nil
+        case ("SPOT", 4): return n[2] > 0 && n[3] > 0 ? .spotlight(CGRect(x: n[0], y: n[1], width: n[2], height: n[3])) : nil
+        case ("CHEER", 2): return .cheer(p, words.isEmpty ? "(^▽^)" : String(words.prefix(16)))
         default: return nil
         }
     }
@@ -88,7 +97,7 @@ enum SketchScript {
 
 /// A sketch mark resolved to global screen points (AppKit coordinates, origin bottom-left).
 struct Stroke {
-    enum Kind { case point, frame, pen, text, badge, marker, note }
+    enum Kind { case point, frame, pen, text, badge, marker, note, target, spotlight, cheer }
     /// Free words read white on dark screens and near-black on light ones.
     enum Tone { case light, dark }
 
@@ -124,6 +133,9 @@ struct Stroke {
         case .badge: return 0.16
         case .note: return 0.42
         case .point: return 0.28
+        case .target: return 0.45
+        case .spotlight: return 0.35
+        case .cheer: return 0.25
         }
     }
 
@@ -144,7 +156,7 @@ struct Stroke {
         let f = max(0, min(1, fraction))
         switch kind {
         case .pen: return prefix(f).last ?? box.origin
-        case .frame:
+        case .frame, .target:
             // Round the frame from its top-left corner, clockwise.
             let w = box.width, h = box.height, d = (2 * (w + h)) * f
             if d <= w { return CGPoint(x: box.minX + d, y: box.maxY) }
@@ -152,7 +164,7 @@ struct Stroke {
             if d <= 2 * w + h { return CGPoint(x: box.maxX - (d - w - h), y: box.minY) }
             return CGPoint(x: box.minX, y: box.minY + (d - 2 * w - h))
         case .marker, .text: return CGPoint(x: box.minX + box.width * f, y: box.midY)
-        case .badge, .note, .point: return CGPoint(x: box.midX, y: box.midY)
+        case .badge, .note, .point, .spotlight, .cheer: return CGPoint(x: box.midX, y: box.midY)
         }
     }
 
@@ -257,6 +269,18 @@ struct Stroke {
             let c = g(p), s: CGFloat = 10
             return Stroke(kind: .pen, paths: [[CGPoint(x: c.x - s / 2, y: c.y + s / 2), CGPoint(x: c.x + s / 2, y: c.y - s / 2)],
                                               [CGPoint(x: c.x + s / 2, y: c.y + s / 2), CGPoint(x: c.x - s / 2, y: c.y - s / 2)]])
+
+        case .target(let r, let label):
+            let b = rect(r).insetBy(dx: -4, dy: -4)
+            let radius = b.width > 2.5 * b.height && b.height < 60 ? b.height / 2 : min(10, b.height / 2)
+            return Stroke(kind: .target, box: b, radius: radius, label: label)
+
+        case .spotlight(let r):
+            return Stroke(kind: .spotlight, box: rect(r).insetBy(dx: -10, dy: -10), radius: 14)
+
+        case .cheer(let p, let face):
+            let c = g(p), width = LabelLayout.size(face).width + 12
+            return Stroke(kind: .cheer, box: CGRect(x: c.x - width / 2, y: c.y - 15, width: width, height: 30), text: face)
 
         case .note(let p, let words):
             // Top-left at the point, kept inside the screenshot.
