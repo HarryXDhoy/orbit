@@ -66,6 +66,9 @@ final class Hotkeys {
     var onOpen: () -> Void = {}
     var onType: () -> Void = {}
     private(set) var isTalking = false
+    /// When the type modifiers went down alone; letting go soon after with no key in between opens the box.
+    private var typeArmed: Date?
+    static let tapLimit: TimeInterval = 0.8
     private var monitors: [Any] = []
     private var globalInstalled = false
     private var retry: Timer?
@@ -114,8 +117,17 @@ final class Hotkeys {
             } else if isTalking, mods != talk.flags {
                 isTalking = false; onTalkEnd()
             }
+            // A modifiers-only type shortcut fires on a tap: press them together and let go.
+            if type.keyCode == nil, !type.flags.isEmpty {
+                if mods == type.flags { if typeArmed == nil { typeArmed = Date() } }
+                else if let armed = typeArmed {
+                    typeArmed = nil
+                    if mods.isSubset(of: type.flags), Date().timeIntervalSince(armed) < Self.tapLimit { onType() }
+                }
+            }
             return false
         case .keyDown:
+            typeArmed = nil // the modifiers were part of another shortcut, like ⌃⌘K
             if isTalking, talk.keyCode == nil {
                 // The talk modifiers were part of some other shortcut; don't treat it as talking.
                 isTalking = false; onTalkCancel()

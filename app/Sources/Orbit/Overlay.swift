@@ -29,6 +29,9 @@ final class OverlayModel: ObservableObject {
     @Published var strokes: [Stroke] = []
     @Published var progress: CGFloat = 0
     @Published var tilt: Double = 0
+    /// Which side of the buddy its bubble opens on, so it stays on screen and its tail points back at the buddy.
+    @Published var bubbleLeft = false
+    @Published var bubbleAbove = false
     /// A 3D model being built or shown, and its window in global coordinates.
     @Published var sculpture: Sculpture?
     private(set) var sculptureFrame: CGRect = .zero
@@ -75,6 +78,18 @@ final class OverlayModel: ObservableObject {
         captionUntil = Date().addingTimeInterval(max(4, Double(text?.count ?? 0) * 0.07))
     }
 
+    /// Flips the bubble left near the right edge and above near the bottom, with a margin so it doesn't flicker.
+    private func placeBubble(around point: CGPoint) {
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) })?.frame else { return }
+        let right = screen.maxX - point.x, below = point.y - screen.minY
+        let left = bubbleLeft ? right < Self.bubbleRoom.width + 60 : right < Self.bubbleRoom.width
+        let above = bubbleAbove ? below < Self.bubbleRoom.height + 60 : below < Self.bubbleRoom.height
+        if left != bubbleLeft { bubbleLeft = left }
+        if above != bubbleAbove { bubbleAbove = above }
+    }
+    /// Room the bubble needs to the right of and below the buddy.
+    static let bubbleRoom = CGSize(width: 360, height: 190)
+
     var activeStroke: Int { min(Int(progress), max(strokes.count - 1, 0)) }
 
     private func tick() {
@@ -109,6 +124,7 @@ final class OverlayModel: ObservableObject {
             ease = stroke.kind == .point ? 0.12 : 0.5
         }
         let next = CGPoint(x: buddy.x + (target.x - buddy.x) * ease, y: buddy.y + (target.y - buddy.y) * ease)
+        placeBubble(around: next)
         if hypot(next.x - buddy.x, next.y - buddy.y) > 0.05 {
             tilt = Double(max(-18, min(18, (next.x - buddy.x) * 1.4)))
             buddy = next
@@ -182,11 +198,13 @@ struct OverlayView: View {
         .allowsHitTesting(false)
     }
 
+    /// The orb sits at the center; the bubble opens toward whichever corner has room.
     var buddy: some View {
-        ZStack(alignment: .topLeading) {
-            OrbitMark(size: 22).rotationEffect(.degrees(model.tilt)).dsShadow()
-                .scaleEffect(model.mood == .listening ? 1.15 : 1)
-                .animation(.spring(response: 0.3, dampingFraction: 0.5), value: model.mood)
+        let left = model.bubbleLeft, above = model.bubbleAbove
+        let corner: Alignment = above ? (left ? .bottomTrailing : .bottomLeading) : (left ? .topTrailing : .topLeading)
+        let anchor: UnitPoint = above ? (left ? .bottomTrailing : .bottomLeading) : (left ? .topTrailing : .topLeading)
+        let half = CGSize(width: 340, height: 220)
+        return ZStack {
             Group {
                 switch model.mood {
                 case .listening:
@@ -194,33 +212,42 @@ struct OverlayView: View {
                         Waveform(active: true, bars: 9)
                         if let caption = model.caption, !caption.isEmpty { Text(caption).lineLimit(2) }
                     }
-                    .bubbleChip()
+                    .bubbleChip(alignment: left ? .trailing : .leading)
                 case .thinking:
-                    Waveform(active: true, bars: 5).bubbleChip()
+                    Waveform(active: true, bars: 5).bubbleChip(alignment: left ? .trailing : .leading)
                 case .idle:
                     if let caption = model.caption {
-                        SpeechBubble(mine: false) { Text(caption).font(.system(size: 13)).foregroundStyle(DS.Colors.ink).lineSpacing(2) }
-                            .frame(maxWidth: 300, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                        // The tail sits in the corner nearest the buddy and points back at it.
+                        SpeechBubble(mine: false, tailOnRight: left, tailOnTop: !above) {
+                            Text(caption).font(.system(size: 13)).foregroundStyle(DS.Colors.ink).lineSpacing(2)
+                        }
+                        .frame(maxWidth: 300, alignment: left ? .trailing : .leading).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             .font(.system(size: 13)).foregroundStyle(DS.Colors.ink)
-            .offset(x: 26, y: 18)
-            .transition(.scale(scale: 0.6, anchor: .topLeading).combined(with: .opacity))
+            .padding(left ? .trailing : .leading, half.width + 14)
+            .padding(above ? .bottom : .top, half.height + 22)
+            .frame(width: half.width * 2, height: half.height * 2, alignment: corner)
+            .transition(.scale(scale: 0.6, anchor: anchor).combined(with: .opacity))
+            OrbitMark(size: 22).rotationEffect(.degrees(model.tilt)).dsShadow()
+                .scaleEffect(model.mood == .listening ? 1.15 : 1)
+                .animation(.spring(response: 0.3, dampingFraction: 0.5), value: model.mood)
         }
-        .frame(width: 340, height: 160, alignment: .topLeading)
-        .offset(x: 159, y: 69) // keep the orb's center on the tracked point
+        .frame(width: half.width * 2, height: half.height * 2)
         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: model.caption)
+        .animation(.spring(response: 0.4, dampingFraction: 0.75), value: left)
+        .animation(.spring(response: 0.4, dampingFraction: 0.75), value: above)
     }
 }
 
 private extension View {
-    func bubbleChip() -> some View {
+    func bubbleChip(alignment: Alignment = .leading) -> some View {
         padding(.horizontal, 12).frame(minHeight: 30)
             .background(DS.Colors.silver, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(DS.Colors.silverEdge.opacity(0.55), lineWidth: DS.edge))
             .dsShadow()
-            .frame(maxWidth: 300, alignment: .leading)
+            .frame(maxWidth: 300, alignment: alignment)
     }
 }
 

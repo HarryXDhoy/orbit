@@ -7,27 +7,39 @@ import SwiftUI
 
 @MainActor
 enum ScreenCapture {
-    static func capture() async throws -> ScreenAttachment {
-        // Ask ScreenCaptureKit directly: CGPreflightScreenCaptureAccess caches a "no" until relaunch.
-        let content: SCShareableContent
-        do { content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) }
+    /// Asks ScreenCaptureKit directly: CGPreflightScreenCaptureAccess caches a "no" until relaunch.
+    static func shareableContent() async throws -> SCShareableContent {
+        do { return try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) }
         catch {
             if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
             throw OrbitError.screenPermission
         }
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main,
+    }
+
+    /// The screen under the cursor, or just `area` (global AppKit coordinates) when given.
+    static func capture(area: CGRect? = nil) async throws -> ScreenAttachment {
+        let content = try await shareableContent()
+        let point = area.map { CGPoint(x: $0.midX, y: $0.midY) } ?? NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main,
               let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
               let display = content.displays.first(where: { $0.displayID == number }) else { throw OrbitError("No screen is available.") }
         let ownWindows = content.windows.filter { $0.owningApplication?.processID == ProcessInfo.processInfo.processIdentifier }
         let filter = SCContentFilter(display: display, excludingWindows: ownWindows)
         let config = SCStreamConfiguration()
-        let scale = min(1, 1440.0 / Double(max(display.width, display.height)))
-        config.width = Int(Double(display.width) * scale)
-        config.height = Int(Double(display.height) * scale)
+        let frame = area?.intersection(screen.frame) ?? screen.frame
+        guard frame.width >= 1, frame.height >= 1 else { throw OrbitError("That area is too small to capture.") }
+        if area != nil {
+            // sourceRect is in the display's points, measured from its top-left corner.
+            config.sourceRect = CGRect(x: frame.minX - screen.frame.minX, y: screen.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
+        }
+        let pixels = CGSize(width: frame.width * screen.backingScaleFactor, height: frame.height * screen.backingScaleFactor)
+        let scale = min(1, 1440.0 / Double(max(pixels.width, pixels.height)))
+        config.width = max(1, Int(Double(pixels.width) * scale))
+        config.height = max(1, Int(Double(pixels.height) * scale))
         config.showsCursor = false
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         guard let jpeg = NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else { throw OrbitError("Could not encode the screenshot.") }
-        return ScreenAttachment(data: jpeg, frame: screen.frame, image: NSImage(cgImage: image, size: screen.frame.size))
+        return ScreenAttachment(data: jpeg, frame: frame, image: NSImage(cgImage: image, size: frame.size), isArea: frame != screen.frame)
     }
 }
 

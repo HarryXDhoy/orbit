@@ -23,6 +23,10 @@ final class AppState: ObservableObject {
     @Published var models: [ProviderKind: [ModelOption]] = [:]
     @Published var modelErrors: [ProviderKind: String] = [:]
     @Published var loadingModels: Set<ProviderKind> = []
+    /// Connectors found in each CLI's own setup, remembered between launches.
+    @Published var connectors: [ProviderKind: [Connector]] = LocalStore.read([ProviderKind: [Connector]].self, name: "connectors.json") ?? [:]
+    @Published var connectorErrors: [ProviderKind: String] = [:]
+    @Published var loadingConnectors: Set<ProviderKind> = []
     let voice = VoiceInput()
     let overlay = OverlayController()
     let hotkeys = Hotkeys()
@@ -119,13 +123,27 @@ final class AppState: ObservableObject {
         settings.provider = provider
         saveSettings()
         fetchModels()
+        fetchConnectors()
     }
-    func capture() {
+    /// Steps Orbit's window aside so you can drag over the part of the screen it should look at.
+    /// `pickArea: false` takes the whole screen under the cursor right away.
+    func capture(pickArea: Bool = true) {
         guard !isCapturing, !isBusy else { return }
         isCapturing = true; error = nil
         Task {
             defer { isCapturing = false }
-            do { attachment = try await ScreenCapture.capture() }
+            guard pickArea else {
+                do { attachment = try await ScreenCapture.capture() } catch { self.error = error.localizedDescription }
+                return
+            }
+            do { _ = try await ScreenCapture.shareableContent() } // ask for permission before dimming the screen
+            catch { self.error = error.localizedDescription; return }
+            let windows = NSApp.windows.filter { $0.isVisible && $0.styleMask.contains(.titled) }
+            windows.forEach { $0.orderOut(nil) }
+            defer { windows.forEach { $0.makeKeyAndOrderFront(nil) }; NSApp.activate(ignoringOtherApps: true) }
+            guard let area = await AreaPicker.pick() else { return }
+            try? await Task.sleep(nanoseconds: 150_000_000) // let the dimming leave the screen
+            do { attachment = try await ScreenCapture.capture(area: area) }
             catch { self.error = error.localizedDescription }
         }
     }
@@ -152,7 +170,7 @@ final class AppState: ObservableObject {
             persist()
             let history = conversations.first { $0.id == chatID }?.messages ?? []
             do {
-                let result = try await client.reply(settings: configuration, messages: history, image: image?.data, apiKey: key)
+                let result = try await client.reply(settings: configuration, messages: history, image: image?.data, apiKey: key, connectors: connectors[configuration.provider] ?? [])
                 try Task.checkCancellation()
                 let built = ModelScript.parse(result.text)
                 let parsed = SketchScript.parse(built.text)
@@ -182,7 +200,7 @@ final class AppState: ObservableObject {
         task = Task {
             defer { isBusy = false; task = nil }
             do {
-                let result = try await client.reply(settings: configuration, messages: [ChatMessage(role: "user", text: "Reply with exactly: Orbit connection OK.")], image: nil, apiKey: key)
+                let result = try await client.reply(settings: configuration, messages: [ChatMessage(role: "user", text: "Reply with exactly: Orbit connection OK.")], image: nil, apiKey: key, connectors: connectors[configuration.provider] ?? [])
                 try Task.checkCancellation()
                 connectionResults[configuration.provider] = "Reply received: " + String(result.text.prefix(100))
             } catch {
@@ -230,6 +248,33 @@ final class AppState: ObservableObject {
         }
     }
     func chooseModel(_ id: String) { currentModel = id; saveSettings() }
+
+    func fetchConnectors(force: Bool = false) {
+        let provider = settings.provider
+        guard provider == .codex || provider == .claude, !loadingConnectors.contains(provider), force || connectors[provider] == nil else { return }
+        loadingConnectors.insert(provider); connectorErrors[provider] = nil
+        let configuration = settings
+        Task {
+            defer { loadingConnectors.remove(provider) }
+            do {
+                connectors[provider] = try await client.connectors(settings: configuration)
+                try? LocalStore.write(connectors, name: "connectors.json")
+            } catch { connectorErrors[provider] = error.localizedDescription }
+        }
+    }
+    func choice(for connector: Connector) -> ConnectorChoice? {
+        settings.connectors.first { $0.provider == settings.provider && $0.name == connector.name }
+    }
+    func setConnector(_ connector: Connector, on: Bool) {
+        settings.connectors.removeAll { $0.provider == settings.provider && $0.name == connector.name }
+        if on { settings.connectors.append(ConnectorChoice(provider: settings.provider, name: connector.name)) }
+        saveSettings()
+    }
+    func setConnector(_ connector: Connector, allowChanges: Bool) {
+        guard let index = settings.connectors.firstIndex(where: { $0.provider == settings.provider && $0.name == connector.name }) else { return }
+        settings.connectors[index].allowChanges = allowChanges
+        saveSettings()
+    }
     func toggleVoice() {
         if voice.isRecording { Task { await voice.finish() }; return }
         let prefix = draft.isEmpty ? "" : draft + " "

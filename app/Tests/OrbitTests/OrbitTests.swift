@@ -210,6 +210,70 @@ final class OrbitTests: XCTestCase {
         XCTAssertNil(ModelScript.parse("no model here").sculpture)
     }
 
+    @MainActor func testModifierOnlyTypeShortcutFiresOnATap() throws {
+        let hotkeys = Hotkeys()
+        hotkeys.type = Shortcut(keyCode: nil, key: nil, flags: [.control, .command])
+        var typed = 0, cleared = 0
+        hotkeys.onType = { typed += 1 }
+        hotkeys.onClear = { cleared += 1 }
+        func flags(_ f: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: f, timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 59)!
+        }
+        func key(_ code: UInt16, _ f: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: f, timestamp: 0, windowNumber: 0, context: nil, characters: "k", charactersIgnoringModifiers: "k", isARepeat: false, keyCode: code)!
+        }
+        // Tap ⌃⌘: opens the box once, on release.
+        hotkeys.handle(flags([.control])); hotkeys.handle(flags([.control, .command]))
+        XCTAssertEqual(typed, 0)
+        hotkeys.handle(flags([.control])); hotkeys.handle(flags([]))
+        XCTAssertEqual(typed, 1)
+        // ⌃⌘K clears drawings and doesn't open the box.
+        hotkeys.handle(flags([.control, .command])); hotkeys.handle(key(40, [.control, .command])); hotkeys.handle(flags([]))
+        XCTAssertEqual(cleared, 1); XCTAssertEqual(typed, 1)
+        // Adding another modifier turns it into something else.
+        hotkeys.handle(flags([.control, .command])); hotkeys.handle(flags([.control, .command, .option])); hotkeys.handle(flags([]))
+        XCTAssertEqual(typed, 1)
+    }
+
+    func testConnectorToolNamesAndLookOnlyFilter() {
+        XCTAssertEqual(Connectors.normalized("claude.ai Google Calendar"), "claude_ai_Google_Calendar")
+        XCTAssertEqual(Connectors.normalized("motion-plus"), "motion-plus")
+        for change in ["mcp__x__create_event", "mcp__x__delete_event", "mcp__x__send_message", "mcp__x__trash_thread", "mcp__x__update_draft"] {
+            XCTAssertTrue(Connectors.looksLikeChange(change), change)
+        }
+        for read in ["mcp__x__list_events", "mcp__x__search_threads", "mcp__x__list_labels", "mcp__x__get_posts", "mcp__x__read_file_content"] {
+            XCTAssertFalse(Connectors.looksLikeChange(read), read)
+        }
+    }
+
+    func testClaudeConnectorArgumentsAllowOnlyChosenLookUpTools() {
+        XCTAssertEqual(Connectors.claudeArguments(choices: [], known: []), ["--safe-mode", "--strict-mcp-config"])
+        let line = #"{"type":"system","subtype":"init","mcp_servers":[{"name":"claude.ai Google Calendar","status":"connected"},{"name":"claude.ai Gmail","status":"connected"}],"tools":["mcp__claude_ai_Google_Calendar__list_events","mcp__claude_ai_Google_Calendar__create_event","mcp__claude_ai_Gmail__search_threads"]}"#
+        let known = try! XCTUnwrap(Connectors.parseClaudeInit(Data(line.utf8)))
+        XCTAssertEqual(known.map(\.displayName), ["Google Calendar", "Gmail"])
+        XCTAssertEqual(known[0].tools.count, 2)
+        let lookOnly = Connectors.claudeArguments(choices: [ConnectorChoice(provider: .claude, name: "claude.ai Google Calendar")], known: known)
+        XCTAssertFalse(lookOnly.contains("--safe-mode"))
+        XCTAssertTrue(lookOnly.contains(#"{"disableAllHooks":true}"#))
+        XCTAssertEqual(lookOnly[lookOnly.firstIndex(of: "--allowedTools")! + 1], "mcp__claude_ai_Google_Calendar__list_events")
+        XCTAssertEqual(lookOnly[lookOnly.firstIndex(of: "--disallowedTools")! + 1], "mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Gmail")
+        let changes = Connectors.claudeArguments(choices: [ConnectorChoice(provider: .claude, name: "claude.ai Google Calendar", allowChanges: true)], known: known)
+        XCTAssertEqual(changes[changes.firstIndex(of: "--allowedTools")! + 1], "mcp__claude_ai_Google_Calendar")
+        // Codex choices don't affect Claude.
+        XCTAssertEqual(Connectors.claudeArguments(choices: [ConnectorChoice(provider: .codex, name: "motion")], known: known), ["--safe-mode", "--strict-mcp-config"])
+    }
+
+    func testCodexConnectorsAreAddedBackWithApprovalMode() throws {
+        let list = #"[{"name":"motion","enabled":true,"auth_status":"o_auth","transport":{"type":"streamable_http","url":"https://mcp.motion.dev","bearer_token_env_var":null}},{"name":"tool.x","enabled":true,"transport":{"type":"stdio","command":"./run","args":["a b"],"env":{"K":"v\"q"},"cwd":"/tmp"}}]"#
+        let known = try Connectors.parseCodexList(Data(list.utf8))
+        XCTAssertEqual(known[0].codexTable, #"{url = "https://mcp.motion.dev"}"#)
+        XCTAssertEqual(known[1].codexTable, #"{command = "./run", args = ["a b"], cwd = "/tmp", env = {"K" = "v\"q"}}"#)
+        let args = Connectors.codexArguments(choices: [ConnectorChoice(provider: .codex, name: "motion"), ConnectorChoice(provider: .codex, name: "tool.x")], known: known)
+        XCTAssertEqual(args, ["-c", #"mcp_servers.motion={url = "https://mcp.motion.dev", default_tools_approval_mode = "writes"}"#]) // dotted names are skipped
+        let approve = Connectors.codexArguments(choices: [ConnectorChoice(provider: .codex, name: "motion", allowChanges: true)], known: known)
+        XCTAssertTrue(approve[1].hasSuffix(#"default_tools_approval_mode = "approve"}"#))
+    }
+
     @MainActor func testTypeShortcutOpensTheTypingBox() throws {
         let hotkeys = Hotkeys()
         var typed = 0

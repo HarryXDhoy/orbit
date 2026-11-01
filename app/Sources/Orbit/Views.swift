@@ -165,7 +165,7 @@ struct ChatView: View {
                 Text("a little buddy that lives on your mac").font(.system(size: 17)).foregroundStyle(DS.Colors.ink)
                 HStack(alignment: .top, spacing: 12) {
                     suggestion("explain my screen", icon: "viewfinder", kind: .aqua, note: "shared only when you ask") {
-                        state.draft = "Explain what’s on my screen and help me with the next step."; state.capture()
+                        state.draft = "Explain what’s on my screen and help me with the next step."; state.capture(pickArea: false)
                     }
                     suggestion("think it through", icon: "lightbulb", kind: .silver, note: "type or talk, your call") {
                         state.draft = "Help me think through an idea. Ask me one question to get started."; composerFocused = true
@@ -190,11 +190,11 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 12) {
                 if let attachment = state.attachment {
                     HStack(spacing: 12) {
-                        MacWindow(title: "screen.png") {
-                            Image(nsImage: attachment.image).resizable().scaledToFill().frame(width: 120, height: 66).clipped()
+                        MacWindow(title: attachment.isArea ? "area.png" : "screen.png") {
+                            Image(nsImage: attachment.image).resizable().scaledToFit().frame(width: 120, height: 66)
                         }.frame(width: 120)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("screen ready to share").font(DS.Typography.bodyMedium)
+                            Text(attachment.isArea ? "area ready to share · \(Int(attachment.frame.width)) × \(Int(attachment.frame.height))" : "screen ready to share").font(DS.Typography.bodyMedium)
                             Text("goes to \(state.settings.provider.title.lowercased()) with your next message").font(DS.Typography.caption).foregroundStyle(DS.Colors.ink2)
                         }
                         Spacer()
@@ -209,8 +209,9 @@ struct ChatView: View {
                         .accessibilityIdentifier("messageInput")
                 }
                 HStack(spacing: 8) {
-                    Button { state.capture() } label: { Label(state.isCapturing ? "capturing…" : "screen", systemImage: "viewfinder") }
+                    Button { state.capture() } label: { Label(state.isCapturing ? "picking…" : "area", systemImage: "rectangle.dashed") }
                         .buttonStyle(PillButtonStyle(kind: .silver, compact: true)).disabled(state.isBusy || state.isCapturing)
+                        .help("Drag over part of your screen for Orbit to look at. Click for the whole screen, Esc to cancel")
                     Button { state.toggleVoice() } label: { Label(voice.isRecording ? "done" : "talk", systemImage: voice.isRecording ? "stop.fill" : "mic") }
                         .buttonStyle(PillButtonStyle(kind: voice.isRecording ? .aqua : .silver, compact: true)).disabled(state.isBusy)
                         .help(voice.isRecording ? "Stop dictation" : "Dictate into the message box")
@@ -300,6 +301,7 @@ struct ConnectionsView: View {
                 }
                 MacWindow(title: "\(state.settings.provider.title.lowercased()) — connection") { form.padding(20) }
                     .disabled(state.isBusy && state.connectionResults[state.settings.provider] != "Testing…")
+                MacWindow(title: "connectors") { connectorsPanel.padding(20) }
                 HStack(alignment: .top, spacing: 10) {
                     Text("( ˘ ³˘)").font(DS.Typography.label)
                     Text("orbit keeps your chat on this mac. messages and any screenshot you attach go only to the connection you pick. subscription sign-in stays with the official cli.")
@@ -308,7 +310,83 @@ struct ConnectionsView: View {
             }
             .frame(maxWidth: 720).padding(.horizontal, 32).padding(.vertical, 28)
             .frame(maxWidth: .infinity)
-        }.onAppear { if state.settings.provider == .custom { state.loadKey() }; state.fetchModels() }
+        }.onAppear { if state.settings.provider == .custom { state.loadKey() }; state.fetchModels(); state.fetchConnectors() }
+    }
+
+    /// Apps Orbit may use through the CLI's own connectors, off until you turn them on.
+    @ViewBuilder var connectorsPanel: some View {
+        let provider = state.settings.provider
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("let orbit use your apps").font(DS.Typography.bodyMedium).foregroundStyle(DS.Colors.ink)
+                    Text("connectors you already set up in \(provider == .codex ? "codex" : "claude code"), like mail or calendar. off until you turn them on.")
+                        .font(DS.Typography.caption).foregroundStyle(DS.Colors.ink2).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if provider == .codex || provider == .claude {
+                    Button(state.loadingConnectors.contains(provider) ? "looking…" : "refresh") { state.fetchConnectors(force: true) }
+                        .buttonStyle(LinkButtonStyle()).disabled(state.loadingConnectors.contains(provider))
+                }
+            }
+            if provider == .custom || provider == .ollama {
+                note("connectors work with the chatgpt and claude connections for now.")
+            } else {
+                let list = state.connectors[provider] ?? []
+                if let message = state.connectorErrors[provider] {
+                    Text(message.lowercased()).font(DS.Typography.caption).foregroundStyle(DS.Colors.danger)
+                }
+                if list.isEmpty, !state.loadingConnectors.contains(provider), state.connectorErrors[provider] == nil {
+                    note(provider == .claude ? "no connectors yet. add them on claude.ai under settings → connectors, or with `claude mcp add`." : "no connectors yet. add one with `codex mcp add`.")
+                }
+                VStack(spacing: 0) {
+                    ForEach(Array(list.enumerated()), id: \.element.id) { index, connector in
+                        if index > 0 { Rectangle().fill(DS.Colors.hairline).frame(height: 1) }
+                        connectorRow(connector, provider: provider)
+                    }
+                }
+                if provider == .claude {
+                    Button("add connectors on claude.ai…") { if let url = URL(string: "https://claude.ai/settings/connectors") { NSWorkspace.shared.open(url) } }
+                        .buttonStyle(LinkButtonStyle())
+                }
+                note(provider == .claude
+                     ? "orbit loads only the connectors you turn on, without your claude code hooks. look-only connectors can’t send, create or delete anything."
+                     : "look-only connectors run only the tools the app marks as read-only; some apps mark none, so turn on changes if a connector can’t do anything.")
+            }
+        }
+    }
+
+    func connectorRow(_ connector: Connector, provider: ProviderKind) -> some View {
+        let choice = state.choice(for: connector)
+        let on = Binding(get: { choice != nil }, set: { state.setConnector(connector, on: $0) })
+        let changes = Binding(get: { choice?.allowChanges ?? false }, set: { state.setConnector(connector, allowChanges: $0) })
+        let status: String = {
+            switch connector.status {
+            case "connected", "enabled": return provider == .claude ? "\(connector.readTools.count) look-up · \(connector.changeTools.count) change tools" : "ready"
+            case "needs-auth": return provider == .claude ? "needs sign-in · run /mcp in claude code" : "needs sign-in · run codex mcp login \(connector.name)"
+            case "disabled": return "turned off in codex"
+            case "pending": return "still connecting · refresh in a moment"
+            default: return connector.status
+            }
+        }()
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "puzzlepiece.extension").font(.system(size: 14)).foregroundStyle(DS.Colors.ink)
+                .frame(width: 30, height: 30)
+                .background(on.wrappedValue ? AnyShapeStyle(DS.Colors.aqua) : AnyShapeStyle(DS.Colors.silver), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(on.wrappedValue ? DS.Colors.aquaEdge.opacity(0.7) : DS.Colors.silverEdge.opacity(0.4), lineWidth: DS.edge))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(connector.displayName.lowercased()).font(DS.Typography.label).foregroundStyle(DS.Colors.ink)
+                Text(status).font(DS.Typography.caption).foregroundStyle(connector.isReady ? DS.Colors.ink2 : DS.Colors.ink3)
+            }
+            Spacer()
+            if on.wrappedValue {
+                Toggle(isOn: changes) { Text("can make changes") }
+                    .toggleStyle(PillToggleStyle())
+                    .help("Let Orbit send, create, change or delete with \(connector.displayName) when you ask it to")
+            }
+            Toggle("", isOn: on).labelsHidden().toggleStyle(.switch).controlSize(.small).tint(DS.Colors.link)
+        }
+        .padding(.vertical, 10)
     }
 
     /// The models this connection offers, fetched automatically; you can still type any id.

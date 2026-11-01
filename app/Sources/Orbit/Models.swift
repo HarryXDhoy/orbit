@@ -77,6 +77,9 @@ struct ConnectionSettings: Codable {
     }
     /// The languages dictation listens in right now.
     var listening: [String] { language == Dictation.auto ? Array(languages.prefix(Dictation.autoLimit)) : [language] }
+    /// Connectors Orbit may use, per provider.
+    var connectorChoices: [ConnectorChoice]?
+    var connectors: [ConnectorChoice] { get { connectorChoices ?? [] } set { connectorChoices = newValue } }
     /// How long drawings stay on screen; 0 keeps them until cleared.
     var keepDrawings: Double { get { drawingSeconds ?? 30 } set { drawingSeconds = newValue } }
 }
@@ -105,6 +108,8 @@ struct ScreenAttachment {
     let data: Data
     let frame: CGRect
     let image: NSImage
+    /// Part of a screen the user picked, rather than the whole screen.
+    var isArea = false
 }
 
 enum ExecutableLocator {

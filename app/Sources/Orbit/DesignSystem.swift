@@ -178,27 +178,34 @@ struct MacWindow<Content: View>: View {
 /// Speech bubble with a tail — aqua for you, silver for the buddy.
 struct SpeechBubble<Content: View>: View {
     var mine: Bool
+    /// Which corner the tail comes out of; by default it follows `mine`, at the bottom.
+    var tailOnRight: Bool? = nil
+    var tailOnTop = false
     @ViewBuilder var content: Content
     var body: some View {
+        let shape = BubbleShape(tailOnRight: tailOnRight ?? mine, tailOnTop: tailOnTop)
         content
             .padding(.horizontal, 15).padding(.vertical, 10)
-            .background { BubbleShape(tailOnRight: mine).fill(mine ? AnyShapeStyle(DS.Colors.aqua) : AnyShapeStyle(DS.Colors.silver)) }
-            .overlay { BubbleShape(tailOnRight: mine).stroke(mine ? DS.Colors.aquaEdge.opacity(0.8) : DS.Colors.silverEdge.opacity(0.55), lineWidth: DS.edge) }
+            .background { shape.fill(mine ? AnyShapeStyle(DS.Colors.aqua) : AnyShapeStyle(DS.Colors.silver)) }
+            .overlay { shape.stroke(mine ? DS.Colors.aquaEdge.opacity(0.8) : DS.Colors.silverEdge.opacity(0.55), lineWidth: DS.edge) }
             .dsShadow()
     }
 }
 
 struct BubbleShape: Shape {
     var tailOnRight: Bool
+    var tailOnTop = false
     func path(in rect: CGRect) -> Path {
         let r = min(DS.Radius.bubble, rect.height / 2)
         var body = Path(roundedRect: rect, cornerRadius: r, style: .continuous)
         let x = tailOnRight ? rect.maxX - 14 : rect.minX + 14
         let dir: CGFloat = tailOnRight ? 1 : -1
+        let edge = tailOnTop ? rect.minY : rect.maxY
+        let out: CGFloat = tailOnTop ? -1 : 1 // away from the bubble
         var tail = Path()
-        tail.move(to: CGPoint(x: x - 6 * dir, y: rect.maxY - 1))
-        tail.addQuadCurve(to: CGPoint(x: x + 10 * dir, y: rect.maxY + 7), control: CGPoint(x: x + 2 * dir, y: rect.maxY + 6))
-        tail.addQuadCurve(to: CGPoint(x: x + 4 * dir, y: rect.maxY - 6), control: CGPoint(x: x + 4 * dir, y: rect.maxY + 2))
+        tail.move(to: CGPoint(x: x - 6 * dir, y: edge - 1 * out))
+        tail.addQuadCurve(to: CGPoint(x: x + 10 * dir, y: edge + 7 * out), control: CGPoint(x: x + 2 * dir, y: edge + 6 * out))
+        tail.addQuadCurve(to: CGPoint(x: x + 4 * dir, y: edge - 6 * out), control: CGPoint(x: x + 4 * dir, y: edge + 2 * out))
         tail.closeSubpath()
         body.addPath(tail)
         return body

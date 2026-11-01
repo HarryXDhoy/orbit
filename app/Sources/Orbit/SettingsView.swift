@@ -112,8 +112,8 @@ struct SettingsView: View {
                             }
                         }
                         divider
-                        row("type to orbit", note: "opens a box by your cursor in any app. return sends, esc closes") {
-                            ShortcutRecorder(shortcut: $state.settings.typeShortcut, fallback: .typeDefault, allowModifiersOnly: false, hotkeys: state.hotkeys) { state.saveSettings() }
+                        row("type to orbit", note: "opens a box by your cursor in any app. modifiers alone open it with a quick tap. return sends, esc closes") {
+                            ShortcutRecorder(shortcut: $state.settings.typeShortcut, fallback: .typeDefault, allowModifiersOnly: true, hotkeys: state.hotkeys) { state.saveSettings() }
                         }
                         divider
                         row("clear drawings", note: nil) {
