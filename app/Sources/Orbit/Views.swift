@@ -8,13 +8,17 @@ struct AppView: View {
             DotGrid().ignoresSafeArea()
             VStack(spacing: 0) {
                 topBar
-                if state.selectedPage == "connections" { ConnectionsView(state: state) }
-                else { ChatView(state: state, voice: state.voice) }
+                switch state.selectedPage {
+                case "connections": ConnectionsView(state: state)
+                case "settings": SettingsView(state: state)
+                default: ChatView(state: state, voice: state.voice)
+                }
             }
             .ignoresSafeArea(.container, edges: .top)
             if let error = state.error { errorBanner(error).padding(.top, 8) }
         }
-        .frame(minWidth: 850, minHeight: 630)
+        .frame(minWidth: 980, minHeight: 630)
+        .focusEffectDisabled()
         .preferredColorScheme(.light)
         .animation(.easeOut(duration: 0.18), value: state.error)
     }
@@ -26,15 +30,13 @@ struct AppView: View {
                 Text("orbit").font(DS.Typography.bodyMedium).foregroundStyle(DS.Colors.ink)
                 nav("chat", page: "chat")
                 nav("connections", page: "connections")
+                nav("settings", page: "settings")
                 Spacer()
                 Toggle(isOn: $state.settings.showCompanion) { Text("buddy") }
                     .toggleStyle(PillToggleStyle())
                     .onChange(of: state.settings.showCompanion) { _, _ in state.saveSettings() }
                     .help("Show Orbit on your desktop")
                 StatusPill(text: state.settings.provider.title.lowercased(), live: state.connectionResults[state.settings.provider] != "Not connected")
-                if state.selectedPage == "chat" {
-                    Button("new chat") { state.newChat() }.buttonStyle(LinkButtonStyle()).disabled(state.isBusy)
-                }
             }
             OrbitMark(size: 22)
         }
@@ -51,7 +53,15 @@ struct AppView: View {
     func errorBanner(_ error: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text("(・_・;)").font(DS.Typography.label)
-            Text(error).font(DS.Typography.label).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(error).font(DS.Typography.label).textSelection(.enabled)
+                if error == OrbitError.screenPermission.message {
+                    HStack(spacing: 8) {
+                        Button("open settings") { PrivacyPane.screen.open() }.buttonStyle(PillButtonStyle(kind: .silver, compact: true))
+                        Button("relaunch orbit") { state.relaunch() }.buttonStyle(PillButtonStyle(kind: .aqua, compact: true))
+                    }.foregroundStyle(DS.Colors.ink)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
             Button { state.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle())
         }
         .foregroundStyle(DS.Colors.danger)
@@ -81,6 +91,13 @@ struct ChatView: View {
     @ObservedObject var voice: VoiceInput
     @FocusState var composerFocused: Bool
     var body: some View {
+        HStack(spacing: 0) {
+            ChatList(state: state)
+            conversation
+        }
+    }
+
+    var conversation: some View {
         VStack(spacing: 0) {
             ScrollViewReader { reader in
                 ScrollView {
@@ -88,7 +105,7 @@ struct ChatView: View {
                     else {
                         LazyVStack(spacing: 18) {
                             ForEach(state.messages) { message in row(message).id(message.id) }
-                            if state.isBusy { thinking.id("busy") }
+                            if state.isBusy && state.busyID == state.currentID { thinking.id("busy") }
                             Color.clear.frame(height: 1).id("bottom")
                         }
                         .frame(maxWidth: 720).padding(.horizontal, 32).padding(.vertical, 28)
@@ -96,6 +113,7 @@ struct ChatView: View {
                     }
                 }
                 .onChange(of: state.messages.count) { _, _ in withAnimation { reader.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: state.currentID) { _, _ in reader.scrollTo("bottom", anchor: .bottom) }
                 .onChange(of: state.isBusy) { _, _ in withAnimation { reader.scrollTo("bottom", anchor: .bottom) } }
             }
             composer
@@ -196,6 +214,9 @@ struct ChatView: View {
                     Button { state.toggleVoice() } label: { Label(voice.isRecording ? "done" : "talk", systemImage: voice.isRecording ? "stop.fill" : "mic") }
                         .buttonStyle(PillButtonStyle(kind: voice.isRecording ? .aqua : .silver, compact: true)).disabled(state.isBusy)
                         .help(voice.isRecording ? "Stop dictation" : "Dictate into the message box")
+                    Button { state.nextLanguage() } label: { Text(Dictation.short(state.settings.language)) }
+                        .buttonStyle(PillButtonStyle(kind: .ghost, compact: true)).disabled(voice.isRecording)
+                        .help(state.settings.languages.count > 1 ? "Dictating in \(Dictation.name(state.settings.language)) · click to switch" : "Dictating in \(Dictation.name(state.settings.language)) · add languages in Settings")
                     Toggle(isOn: $state.settings.seesScreen) { Text("sees screen") }
                         .toggleStyle(PillToggleStyle()).help("Look at your screen with every message so Orbit can point and draw")
                         .onChange(of: state.settings.seesScreen) { _, _ in state.saveSettings() }
@@ -218,7 +239,7 @@ struct ChatView: View {
             .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.black.opacity(0.12), lineWidth: DS.edge))
             .dsShadow()
             HStack(spacing: 6) {
-                Text(voice.isRecording ? "listening… tap done, then check your words before sending" : "hold ⌃ control + ⌥ option anywhere to talk  ·  ⌘ return to send")
+                Text(voice.isRecording ? "listening… tap done, then check your words before sending" : state.settings.talkHotkey ? "hold \(state.settings.talkShortcut.spoken) anywhere to talk  ·  return to send" : "return to send")
                 if !state.hotkeyTrusted && state.settings.talkHotkey && !voice.isRecording {
                     Button("allow the hotkey") { state.allowHotkey() }.buttonStyle(LinkButtonStyle()).font(DS.Typography.caption)
                 }
@@ -340,6 +361,77 @@ extension ProviderKind {
         case .claude: return "claude.app"
         case .custom: return "custom-api.json"
         case .ollama: return "ollama.local"
+        }
+    }
+}
+
+/// The list of past chats down the left side, newest first.
+struct ChatList: View {
+    @ObservedObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button { state.newChat() } label: { Label("new chat", systemImage: "square.and.pencil").frame(maxWidth: .infinity) }
+                .buttonStyle(PillButtonStyle(kind: state.currentID == nil ? .aqua : .silver, compact: true))
+            if state.conversations.isEmpty {
+                Text("your chats will show up here (˘▾˘)").font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3).padding(.horizontal, 6)
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(groups, id: \.0) { group in
+                        Text(group.0).font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3).padding(.horizontal, 8).padding(.top, 10).padding(.bottom, 2)
+                        ForEach(group.1) { chat in ChatRow(chat: chat, state: state) }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.top, 16)
+        .frame(width: 236)
+        .background(Color.white.opacity(0.45), ignoresSafeAreaEdges: [])
+        .overlay(alignment: .trailing) { Rectangle().fill(DS.Colors.hairline).frame(width: 1) }
+    }
+
+    private var groups: [(String, [Conversation])] {
+        let calendar = Calendar.current
+        var buckets: [(String, [Conversation])] = [("today", []), ("yesterday", []), ("this week", []), ("earlier", [])]
+        for chat in state.conversations.sorted(by: { $0.updated > $1.updated }) {
+            let i = calendar.isDateInToday(chat.updated) ? 0 : calendar.isDateInYesterday(chat.updated) ? 1
+                : (calendar.dateComponents([.day], from: chat.updated, to: Date()).day ?? 99) < 7 ? 2 : 3
+            buckets[i].1.append(chat)
+        }
+        return buckets.filter { !$0.1.isEmpty }
+    }
+}
+
+struct ChatRow: View {
+    let chat: Conversation
+    @ObservedObject var state: AppState
+    @State private var hovering = false
+    var body: some View {
+        let selected = state.currentID == chat.id
+        Button { state.select(chat.id) } label: {
+            HStack(spacing: 6) {
+                if state.busyID == chat.id { Waveform(active: true, bars: 3).frame(width: 14) }
+                Text(chat.title.lowercased()).font(DS.Typography.label).foregroundStyle(selected ? DS.Colors.ink : DS.Colors.ink2).lineLimit(1)
+                Spacer(minLength: 0)
+                if hovering && state.busyID != chat.id {
+                    Button { state.deleteChat(chat.id) } label: { Image(systemName: "trash") }.buttonStyle(IconButtonStyle()).help("Delete chat")
+                }
+            }
+            .padding(.horizontal, 8).frame(height: 32)
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(DS.Colors.silver)
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(DS.Colors.silverEdge.opacity(0.35), lineWidth: DS.edge))
+                } else if hovering {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.black.opacity(0.04))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .contextMenu {
+            Button("Delete Chat", role: .destructive) { state.deleteChat(chat.id) }.disabled(state.busyID == chat.id)
         }
     }
 }

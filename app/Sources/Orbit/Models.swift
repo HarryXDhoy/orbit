@@ -6,6 +6,7 @@ struct OrbitError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }
+    static let screenPermission = OrbitError("Orbit can’t see your screen yet. Turn Orbit on in System Settings → Privacy & Security → Screen & System Audio Recording, then relaunch Orbit.")
 }
 
 enum ProviderKind: String, Codable, CaseIterable, Identifiable {
@@ -54,6 +55,19 @@ struct ConnectionSettings: Codable {
     var pushToTalk: Bool?
     var seesScreen: Bool { get { autoScreen ?? true } set { autoScreen = newValue } }
     var talkHotkey: Bool { get { pushToTalk ?? true } set { pushToTalk = newValue } }
+    var talkKeys: Shortcut?
+    var clearKeys: Shortcut?
+    var openKeys: Shortcut?
+    var drawingSeconds: Double?
+    var talkShortcut: Shortcut { get { talkKeys ?? .talkDefault } set { talkKeys = newValue } }
+    var clearShortcut: Shortcut { get { clearKeys ?? .clearDefault } set { clearKeys = newValue } }
+    var openShortcut: Shortcut { get { openKeys ?? .openDefault } set { openKeys = newValue } }
+    var dictationLanguages: [String]?
+    var dictationLanguage: String?
+    var languages: [String] { get { dictationLanguages?.isEmpty == false ? dictationLanguages! : [Dictation.systemDefault] } set { dictationLanguages = newValue } }
+    var language: String { get { dictationLanguage.flatMap { languages.contains($0) ? $0 : nil } ?? languages[0] } set { dictationLanguage = newValue } }
+    /// How long drawings stay on screen; 0 keeps them until cleared.
+    var keepDrawings: Double { get { drawingSeconds ?? 30 } set { drawingSeconds = newValue } }
 }
 
 struct ChatMessage: Codable, Identifiable {
@@ -63,6 +77,17 @@ struct ChatMessage: Codable, Identifiable {
     var date = Date()
     var hadImage = false
     var provider: String? = nil
+}
+
+struct Conversation: Codable, Identifiable {
+    var id = UUID()
+    var title: String
+    var updated = Date()
+    var messages: [ChatMessage] = []
+    static func title(for text: String) -> String {
+        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+        return line.count > 48 ? String(line.prefix(48)) + "…" : line
+    }
 }
 
 struct ScreenAttachment {

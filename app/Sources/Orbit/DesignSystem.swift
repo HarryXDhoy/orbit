@@ -271,3 +271,36 @@ struct OrbitMark: View {
         }.frame(width: size, height: size)
     }
 }
+
+/// Lays children out left to right, wrapping onto new lines.
+struct FlowRow: Layout {
+    var spacing: CGFloat = 8
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(proposal.width ?? .infinity, subviews)
+        return CGSize(width: proposal.width ?? rows.map(\.width).max() ?? 0, height: rows.last.map { $0.y + $0.height } ?? 0)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for row in arrange(bounds.width, subviews) {
+            var x = bounds.minX
+            for index in row.items {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: bounds.minY + row.y + (row.height - size.height) / 2), proposal: .unspecified)
+                x += size.width + spacing
+            }
+        }
+    }
+    private func arrange(_ width: CGFloat, _ subviews: Subviews) -> [(items: [Int], y: CGFloat, width: CGFloat, height: CGFloat)] {
+        var rows: [(items: [Int], y: CGFloat, width: CGFloat, height: CGFloat)] = []
+        var current: [Int] = [], x: CGFloat = 0, y: CGFloat = 0, height: CGFloat = 0
+        for (i, view) in subviews.enumerated() {
+            let size = view.sizeThatFits(.unspecified)
+            if !current.isEmpty, x + size.width > width {
+                rows.append((current, y, x - spacing, height)); y += height + spacing
+                current = []; x = 0; height = 0
+            }
+            current.append(i); x += size.width + spacing; height = max(height, size.height)
+        }
+        if !current.isEmpty { rows.append((current, y, x - spacing, height)) }
+        return rows
+    }
+}

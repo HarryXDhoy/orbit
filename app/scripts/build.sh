@@ -9,7 +9,11 @@ mkdir -p "$stage/Orbit.app/Contents/MacOS" "$stage/Orbit.app/Contents/Resources"
 cp -X .build/release/Orbit "$stage/Orbit.app/Contents/MacOS/Orbit"
 cp -X Info.plist "$stage/Orbit.app/Contents/Info.plist"
 cp -X Resources/AppIcon.icns "$stage/Orbit.app/Contents/Resources/AppIcon.icns"
-codesign --force --sign - --identifier local.orbit.companion "$stage/Orbit.app"
+# Sign with a stable identity so macOS keeps Screen Recording, Microphone and Accessibility grants across
+# rebuilds (an ad-hoc signature changes every build, which silently invalidates them).
+identity="${ORBIT_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application|Apple Development/ { print $2; exit }')}"
+codesign --force --sign "${identity:--}" --identifier local.orbit.companion "$stage/Orbit.app"
+printf 'Signed with %s\n' "${identity:-ad-hoc (permissions reset on every build)}"
 # Replace the bundle after signing; never overwrite a running executable in place.
 if [ -d dist/Orbit.app ]; then
     mv dist/Orbit.app "$stage/previous-Orbit.app"

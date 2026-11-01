@@ -6,7 +6,11 @@ import SwiftUI
 @MainActor
 final class AppState: ObservableObject {
     @Published var settings = LocalStore.read(ConnectionSettings.self, name: "settings.json") ?? ConnectionSettings()
-    @Published var messages = LocalStore.read([ChatMessage].self, name: "conversation.json") ?? []
+    @Published var conversations = AppState.loadConversations()
+    /// The open chat; nil is a fresh chat that becomes a conversation on its first message.
+    @Published var currentID: UUID?
+    @Published var busyID: UUID?
+    var messages: [ChatMessage] { conversations.first { $0.id == currentID }?.messages ?? [] }
     @Published var draft = ""
     @Published var attachment: ScreenAttachment?
     @Published var isBusy = false
@@ -19,7 +23,7 @@ final class AppState: ObservableObject {
     @Published var isLoadingModels = false
     let voice = VoiceInput()
     let overlay = OverlayController()
-    let hotkey = PushToTalk()
+    let hotkeys = Hotkeys()
     @Published var hotkeyTrusted = AXIsProcessTrusted()
     private var heard = ""
     let client = ProviderClient()
@@ -42,27 +46,49 @@ final class AppState: ObservableObject {
     func loadKey() { apiKey = APIKeyStore.read(endpoint: settings.customBaseURL) }
     func updateCompanion() {
         if settings.showCompanion { overlay.show() } else { overlay.hide() }
-        if settings.talkHotkey {
-            hotkey.onPress = { [weak self] in self?.beginTalk() }
-            hotkey.onRelease = { [weak self] in self?.endTalk() }
-            hotkey.start()
-        } else {
-            hotkey.onPress = {}; hotkey.onRelease = {}
-        }
-        hotkeyTrusted = hotkey.isTrusted
+        overlay.model.keepDrawings = settings.keepDrawings > 0 ? settings.keepDrawings : .infinity
+        hotkeys.talk = settings.talkShortcut
+        hotkeys.clear = settings.clearShortcut
+        hotkeys.open = settings.openShortcut
+        hotkeys.talkEnabled = settings.talkHotkey
+        hotkeys.onTalkStart = { [weak self] in self?.beginTalk() }
+        hotkeys.onTalkEnd = { [weak self] in self?.endTalk() }
+        hotkeys.onTalkCancel = { [weak self] in self?.cancelTalk() }
+        hotkeys.onClear = { [weak self] in self?.overlay.model.clear(); self?.overlay.model.say(nil) }
+        hotkeys.onOpen = { [weak self] in self?.showWindow?() }
+        hotkeys.start()
+        hotkeyTrusted = hotkeys.isTrusted
     }
     func allowHotkey() {
-        hotkey.requestPermission()
-        Task { for _ in 0..<30 { try? await Task.sleep(nanoseconds: 2_000_000_000); hotkeyTrusted = hotkey.isTrusted; if hotkeyTrusted { return } } }
+        hotkeys.requestPermission()
+        Task { for _ in 0..<30 { try? await Task.sleep(nanoseconds: 2_000_000_000); hotkeyTrusted = hotkeys.isTrusted; if hotkeyTrusted { return } } }
     }
-    // Hold ⌃⌥: listen; let go: Orbit looks at the screen, answers out loud, and draws.
+    func nextLanguage() {
+        let list = settings.languages
+        guard list.count > 1, let i = list.firstIndex(of: settings.language) else { return }
+        settings.language = list[(i + 1) % list.count]
+        saveSettings()
+    }
+    func relaunch() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+    }
+    func cancelTalk() {
+        guard overlay.model.mood == .listening else { return }
+        voice.stop(); heard = ""
+        overlay.model.mood = .idle; overlay.model.caption = nil
+    }
+    // Hold the talk shortcut: listen; let go: Orbit looks at the screen, answers out loud, and draws.
     func beginTalk() {
         guard !isBusy, !voice.isRecording else { return }
         speaker.stopSpeaking(at: .immediate)
         heard = ""
         overlay.model.clear(); overlay.model.mood = .listening; overlay.model.caption = nil
         Task { [self] in
-            await voice.start(onText: { [weak self] text in self?.heard = text; self?.overlay.model.caption = text },
+            await voice.start(locale: Locale(identifier: settings.language), onText: { [weak self] text in self?.heard = text; self?.overlay.model.caption = text },
                               onError: { [weak self] error in self?.error = error; self?.overlay.model.mood = .idle })
         }
     }
@@ -96,23 +122,26 @@ final class AppState: ObservableObject {
         let configuration = settings
         let key = configuration.provider == .custom ? APIKeyStore.read(endpoint: configuration.customBaseURL) : ""
         var image = attachment
+        let startedIn = currentID
         if spokenText == nil { draft = "" }
         attachment = nil; isBusy = true; error = nil
         overlay.model.clear(); overlay.model.say(nil); overlay.model.mood = .thinking
         task = Task {
-            defer { isBusy = false; task = nil; overlay.model.mood = .idle }
+            defer { isBusy = false; busyID = nil; task = nil; overlay.model.mood = .idle }
             if image == nil, configuration.seesScreen {
                 do { image = try await ScreenCapture.capture() }
                 catch { self.error = error.localizedDescription }
             }
-            messages.append(ChatMessage(role: "user", text: text, hadImage: image != nil))
+            let chatID = append(ChatMessage(role: "user", text: text, hadImage: image != nil), to: startedIn)
+            if currentID == startedIn { currentID = chatID }
+            busyID = chatID
             persist()
-            let history = messages
+            let history = conversations.first { $0.id == chatID }?.messages ?? []
             do {
                 let result = try await client.reply(settings: configuration, messages: history, image: image?.data, apiKey: key)
                 try Task.checkCancellation()
                 let parsed = SketchScript.parse(result.text)
-                messages.append(ChatMessage(role: "assistant", text: parsed.text, provider: configuration.provider.title))
+                append(ChatMessage(role: "assistant", text: parsed.text, provider: configuration.provider.title), to: chatID)
                 connectionResults[configuration.provider] = "Reply verified"
                 persist()
                 if let image, !parsed.marks.isEmpty { overlay.model.play(parsed.marks, frame: image.frame) }
@@ -156,7 +185,7 @@ final class AppState: ObservableObject {
     func toggleVoice() {
         if voice.isRecording { voice.stop(); return }
         let prefix = draft.isEmpty ? "" : draft + " "
-        Task { [self] in await voice.start(onText: { [weak self] text in self?.draft = prefix + text }, onError: { [weak self] error in self?.error = error }) }
+        Task { [self] in await voice.start(locale: Locale(identifier: settings.language), onText: { [weak self] text in self?.draft = prefix + text }, onError: { [weak self] error in self?.error = error }) }
     }
     func speak(_ text: String) {
         speaker.stopSpeaking(at: .immediate)
@@ -168,11 +197,39 @@ final class AppState: ObservableObject {
         }
         speaker.speak(utterance)
     }
-    func newChat() { guard !isBusy else { return }; messages = []; attachment = nil; error = nil; persist() }
+    func newChat() { currentID = nil; attachment = nil; error = nil }
+    func select(_ id: UUID) { currentID = id; attachment = nil; error = nil }
+    func deleteChat(_ id: UUID) {
+        conversations.removeAll { $0.id == id }
+        if currentID == id { currentID = nil }
+        persist()
+    }
+    func deleteAllChats() { guard !isBusy else { return }; conversations = []; currentID = nil; persist() }
+    /// Adds a message to a chat (creating it when `id` is nil) and returns that chat's id.
+    @discardableResult func append(_ message: ChatMessage, to id: UUID?) -> UUID {
+        if let id, let index = conversations.firstIndex(where: { $0.id == id }) {
+            conversations[index].messages.append(message)
+            conversations[index].updated = Date()
+            return id
+        }
+        let chat = Conversation(title: Conversation.title(for: message.text), messages: [message])
+        conversations.insert(chat, at: 0)
+        return chat.id
+    }
     func persist() {
-        if messages.count > 100 { messages = Array(messages.suffix(100)) }
-        do { try LocalStore.write(messages, name: "conversation.json") }
+        for i in conversations.indices where conversations[i].messages.count > 200 {
+            conversations[i].messages = Array(conversations[i].messages.suffix(200))
+        }
+        conversations.sort { $0.updated > $1.updated }
+        if conversations.count > 200 { conversations = Array(conversations.prefix(200)) }
+        do { try LocalStore.write(conversations, name: "conversations.json") }
         catch { self.error = error.localizedDescription }
+    }
+    static func loadConversations() -> [Conversation] {
+        if let saved = LocalStore.read([Conversation].self, name: "conversations.json") { return saved }
+        // Carry over the single chat kept by earlier builds.
+        guard let old = LocalStore.read([ChatMessage].self, name: "conversation.json"), let first = old.first(where: { $0.role == "user" }) else { return [] }
+        return [Conversation(title: Conversation.title(for: first.text), updated: old.last?.date ?? Date(), messages: old)]
     }
     func openLogin() {
         let path = settings.provider == .codex ? settings.codexPath : settings.claudePath

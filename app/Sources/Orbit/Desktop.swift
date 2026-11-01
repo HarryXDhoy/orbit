@@ -7,11 +7,13 @@ import SwiftUI
 @MainActor
 enum ScreenCapture {
     static func capture() async throws -> ScreenAttachment {
-        guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
-            throw OrbitError("Allow Orbit in System Settings → Privacy & Security → Screen & System Audio Recording, then try Capture again. macOS may require reopening Orbit.")
+        // Ask ScreenCaptureKit directly: CGPreflightScreenCaptureAccess caches a "no" until relaunch.
+        let content: SCShareableContent
+        do { content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) }
+        catch {
+            if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+            throw OrbitError.screenPermission
         }
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main,
               let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
               let display = content.displays.first(where: { $0.displayID == number }) else { throw OrbitError("No screen is available.") }
@@ -37,13 +39,13 @@ final class VoiceInput: ObservableObject {
     private var installedTap = false
     private var generation = UUID()
 
-    func start(onText: @escaping (String) -> Void, onError: @escaping (String) -> Void) async {
+    func start(locale: Locale, onText: @escaping (String) -> Void, onError: @escaping (String) -> Void) async {
         let microphone = await AVCaptureDevice.requestAccess(for: .audio)
         let speech = await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
         }
         guard microphone, speech == .authorized else { onError("Enable Orbit’s Microphone and Speech Recognition permissions in System Settings."); return }
-        guard let recognizer = SFSpeechRecognizer(locale: Locale.autoupdatingCurrent), recognizer.isAvailable else { onError("Speech recognition is unavailable for the current language."); return }
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { onError("Speech recognition for \(Dictation.name(locale.identifier)) isn’t available right now. Pick another language in Settings."); return }
         stop()
         let current = UUID(); generation = current
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -76,4 +78,22 @@ final class VoiceInput: ObservableObject {
         request?.endAudio(); recognitionTask?.cancel()
         request = nil; recognitionTask = nil; isRecording = false
     }
+}
+
+/// Languages Orbit can take dictation in. You pick a few in Settings and flip between them.
+enum Dictation {
+    static var supported: [String] {
+        SFSpeechRecognizer.supportedLocales().map(\.identifier).sorted { name($0).localizedCompare(name($1)) == .orderedAscending }
+    }
+    /// The system language when speech recognition supports it, else English.
+    static var systemDefault: String {
+        let ids = Set(SFSpeechRecognizer.supportedLocales().map(\.identifier))
+        let current = Locale.autoupdatingCurrent
+        let exact = current.identifier.replacingOccurrences(of: "_", with: "-")
+        if ids.contains(exact) { return exact }
+        if let code = current.language.languageCode?.identifier, let match = ids.sorted().first(where: { $0.hasPrefix(code + "-") }) { return match }
+        return "en-US"
+    }
+    static func name(_ id: String) -> String { Locale.autoupdatingCurrent.localizedString(forIdentifier: id) ?? id }
+    static func short(_ id: String) -> String { String(id.split(separator: "-").first ?? Substring(id)) }
 }

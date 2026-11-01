@@ -105,6 +105,48 @@ final class OrbitTests: XCTestCase {
         }
         return try JSONSerialization.jsonObject(with: data) as! [String: Any]
     }
+
+    func testShortcutDisplay() {
+        XCTAssertEqual(Shortcut.talkDefault.display, "⌃⌥")
+        XCTAssertEqual(Shortcut.clearDefault.display, "⌃⌘K")
+        XCTAssertEqual(Shortcut.talkDefault.spoken, "⌃ control + ⌥ option")
+    }
+
+    @MainActor func testHotkeysHoldToTalkClearAndCancel() throws {
+        let hotkeys = Hotkeys()
+        var log: [String] = []
+        hotkeys.onTalkStart = { log.append("start") }
+        hotkeys.onTalkEnd = { log.append("end") }
+        hotkeys.onTalkCancel = { log.append("cancel") }
+        hotkeys.onClear = { log.append("clear") }
+        func flags(_ f: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: f, timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 59)!
+        }
+        func key(_ code: UInt16, _ f: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: f, timestamp: 0, windowNumber: 0, context: nil, characters: "k", charactersIgnoringModifiers: "k", isARepeat: false, keyCode: code)!
+        }
+        hotkeys.handle(flags([.control]))
+        hotkeys.handle(flags([.control, .option]))
+        hotkeys.handle(flags([]))
+        XCTAssertEqual(log, ["start", "end"])
+        log = []
+        hotkeys.handle(flags([.control, .option]))
+        hotkeys.handle(key(40, [.control, .option]))  // ⌃⌥K is someone else's shortcut
+        hotkeys.handle(flags([]))
+        XCTAssertEqual(log, ["start", "cancel"])
+        log = []
+        XCTAssertTrue(hotkeys.handle(key(40, [.control, .command])))
+        XCTAssertEqual(log, ["clear"])
+        log = []
+        hotkeys.paused = true
+        hotkeys.handle(flags([.control, .option]))
+        XCTAssertEqual(log, [])
+    }
+
+    func testConversationTitleUsesFirstLine() {
+        XCTAssertEqual(Conversation.title(for: "fix my code\nsecond line"), "fix my code")
+        XCTAssertEqual(Conversation.title(for: String(repeating: "a", count: 60)).count, 49)
+    }
 }
 
 final class FixtureProtocol: URLProtocol {

@@ -15,7 +15,7 @@ final class OrbitDelegate: NSObject, NSApplicationDelegate {
         window.toolbar = NSToolbar(identifier: "orbit")
         window.toolbarStyle = .unified
         window.backgroundColor = NSColor(red: 0.96, green: 0.96, blue: 0.96, alpha: 1)
-        window.minSize = CGSize(width: 850, height: 630)
+        window.minSize = CGSize(width: 980, height: 630)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: AppView(state: state))
         window.center()
@@ -25,8 +25,9 @@ final class OrbitDelegate: NSObject, NSApplicationDelegate {
         status?.button?.image = Self.menuBarFace()
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Orbit", action: #selector(showWindow), keyEquivalent: "o").target = self
-        menu.addItem(withTitle: "Connections", action: #selector(showConnections), keyEquivalent: ",").target = self
-        menu.addItem(withTitle: "Clear Drawings", action: #selector(clearDrawings), keyEquivalent: "k").target = self
+        menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
+        menu.addItem(withTitle: "Connections", action: #selector(showConnections), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Clear Drawings", action: #selector(clearDrawings), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Orbit", action: #selector(quit), keyEquivalent: "q").target = self
         status?.menu = menu
@@ -46,6 +47,7 @@ final class OrbitDelegate: NSObject, NSApplicationDelegate {
         state.updateCompanion()
     }
     @objc func showWindow() { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    @objc func showSettings() { state.selectedPage = "settings"; showWindow() }
     @objc func showConnections() { state.selectedPage = "connections"; showWindow() }
     @objc func clearDrawings() { state.overlay.model.clear(); state.overlay.model.say(nil) }
     /// Orbit's face as a menu bar template image: an orb outline and two eyes.

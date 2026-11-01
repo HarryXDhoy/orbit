@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import SwiftUI
 
 /// Transparent, click-through window covering one screen. Orbit's buddy and drawings live here.
@@ -35,7 +34,7 @@ final class OverlayModel: ObservableObject {
     private var captionUntil = Date.distantPast
     static let offset = CGPoint(x: 22, y: -24)
     static let secondsPerStroke: CGFloat = 0.55
-    static let keepDrawings: TimeInterval = 30
+    var keepDrawings: TimeInterval = 30
 
     func start() {
         guard timer == nil else { return }
@@ -64,7 +63,7 @@ final class OverlayModel: ObservableObject {
             progress = min(CGFloat(strokes.count), CGFloat(now.timeIntervalSince(started)) / Self.secondsPerStroke)
             if progress >= CGFloat(strokes.count), drawingDone == nil { drawingDone = now }
         }
-        if let done = drawingDone, now.timeIntervalSince(done) > Self.keepDrawings { clear() }
+        if let done = drawingDone, now.timeIntervalSince(done) > keepDrawings { clear() }
         if mood == .idle, caption != nil, now > captionUntil { caption = nil }
 
         // While drawing the buddy rides the pen tip; otherwise it trails the cursor.
@@ -228,52 +227,5 @@ struct PointPulse: View {
             Circle().fill(DS.Colors.link).frame(width: 7, height: 7)
         }
         .onAppear { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { on = true } }
-    }
-}
-
-/// Hold ⌃ control + ⌥ option anywhere to talk to Orbit. Needs Accessibility permission to see global keys.
-@MainActor
-final class PushToTalk {
-    var onPress: () -> Void = {}
-    var onRelease: () -> Void = {}
-    private(set) var isHeld = false
-    private var monitors: [Any] = []
-    private var retry: Timer?
-    static let combo: NSEvent.ModifierFlags = [.control, .option]
-
-    var isTrusted: Bool { AXIsProcessTrusted() }
-
-    func start() {
-        guard monitors.isEmpty else { return }
-        if let local = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged, handler: { [weak self] event in
-            MainActor.assumeIsolated { self?.handle(event.modifierFlags) }
-            return event
-        }) { monitors.append(local) }
-        if isTrusted { installGlobal() }
-        else {
-            // Accessibility may be granted later in System Settings; pick it up without a relaunch.
-            retry = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, self.isTrusted else { return }
-                    self.retry?.invalidate(); self.retry = nil
-                    self.installGlobal()
-                }
-            }
-        }
-    }
-    func requestPermission() {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
-    }
-    private func installGlobal() {
-        if let global = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: { [weak self] event in
-            MainActor.assumeIsolated { self?.handle(event.modifierFlags) }
-        }) { monitors.append(global) }
-    }
-    private func handle(_ flags: NSEvent.ModifierFlags) {
-        let held = flags.intersection([.control, .option, .command, .shift]) == Self.combo
-        guard held != isHeld else { return }
-        isHeld = held
-        held ? onPress() : onRelease()
     }
 }
