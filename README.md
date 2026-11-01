@@ -7,12 +7,14 @@ Orbit sits next to your cursor. Hold **⌃ control + ⌥ option** anywhere and a
 ![orbit](app/screenshots/welcome.png)
 ![drawing overlay](app/screenshots/overlay.png)
 ![settings](app/screenshots/settings.png)
+![3d model](app/screenshots/model3d.png)
 
 ## What it does
 - **Cursor buddy**: a small orb follows your mouse across every screen.
 - **Push to talk**: hold ⌃⌥, speak, then let go. Speech is recognized on device when your Mac supports it.
 - **Sees your screen**: each message includes a screenshot of the display under your cursor. You can turn this off with "sees screen".
 - **Points and draws**: replies can include drawing tags (`POINT`, `BOX`, `CIRCLE`, `ARROW`, `LINE`, `PATH`, `TEXT`). Orbit animates them over your screen as if drawn with a pen.
+- **Builds 3D models**: ask for something in 3D and Orbit builds a small model next to your cursor from simple shapes (`MODEL` and `PART` tags), one piece at a time, then slowly turns it. Rendered natively with SceneKit.
 - **Chats**: past conversations are listed in a sidebar, like other AI apps.
 - **Type from anywhere**: press ⌃⌘T in any app and a small box opens next to your cursor. Type, press return, and Orbit answers in its bubble and draws.
 - **Settings**: buddy behavior, how long drawings stay, dictation languages, keyboard shortcuts, and permission status.

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Transparent, click-through window covering one screen. Orbit's buddy and drawings live here.
@@ -28,6 +29,16 @@ final class OverlayModel: ObservableObject {
     @Published var strokes: [Stroke] = []
     @Published var progress: CGFloat = 0
     @Published var tilt: Double = 0
+    /// A 3D model being built or shown, and its window in global coordinates.
+    @Published var sculpture: Sculpture?
+    private(set) var sculptureFrame: CGRect = .zero
+    private var sculptureStarted: Date?
+    private var placedParts = 0
+    private let placeSound: NSSound? = {
+        let sound = NSSound(named: NSSound.Name("Pop"))
+        sound?.volume = 0.25
+        return sound
+    }()
     private var timer: Timer?
     private var drawingStarted: Date?
     private var drawingDone: Date?
@@ -49,7 +60,16 @@ final class OverlayModel: ObservableObject {
         progress = 0
         drawingStarted = Date(); drawingDone = nil
     }
-    func clear() { strokes = []; progress = 0; drawingStarted = nil; drawingDone = nil }
+    /// Builds a 3D model next to the spot it names; parts pop in one by one.
+    func build(_ model: Sculpture, frame: CGRect) {
+        sculptureFrame = model.frame(in: frame)
+        sculpture = model
+        sculptureStarted = Date(); placedParts = 0
+    }
+    func clear() {
+        strokes = []; progress = 0; drawingStarted = nil; drawingDone = nil
+        sculpture = nil; sculptureStarted = nil
+    }
     func say(_ text: String?) {
         caption = text.map { String($0.prefix(220)) + ($0.count > 220 ? "…" : "") }
         captionUntil = Date().addingTimeInterval(max(4, Double(text?.count ?? 0) * 0.07))
@@ -63,13 +83,25 @@ final class OverlayModel: ObservableObject {
             progress = min(CGFloat(strokes.count), CGFloat(now.timeIntervalSince(started)) / Self.secondsPerStroke)
             if progress >= CGFloat(strokes.count), drawingDone == nil { drawingDone = now }
         }
-        if let done = drawingDone, now.timeIntervalSince(done) > keepDrawings { clear() }
+        if let done = drawingDone, now.timeIntervalSince(done) > keepDrawings { strokes = []; progress = 0; drawingStarted = nil; drawingDone = nil }
+        var building: CGPoint?
+        if let started = sculptureStarted, let model = sculpture {
+            let elapsed = now.timeIntervalSince(started)
+            let buildTime = Double(model.parts.count) * SculptureScene.secondsPerPart
+            if elapsed > buildTime + max(keepDrawings, 20) { sculpture = nil; sculptureStarted = nil }
+            else if elapsed < buildTime {
+                let index = min(Int(elapsed / SculptureScene.secondsPerPart), model.parts.count - 1)
+                if index >= placedParts { placedParts = index + 1; placeSound?.stop(); placeSound?.play() }
+                building = Sculpture.screenPoint(of: model.parts[index], in: sculptureFrame)
+            }
+        }
         if mood == .idle, caption != nil, now > captionUntil { caption = nil }
 
         // While drawing the buddy rides the pen tip; otherwise it trails the cursor.
         var target = NSEvent.mouseLocation
         target.x += Self.offset.x; target.y += Self.offset.y
         var ease: CGFloat = 0.28
+        if let building { target = CGPoint(x: building.x + 18, y: building.y + 26); ease = 0.22 } // hover just above the piece being placed
         if drawingDone == nil, drawingStarted != nil, !strokes.isEmpty {
             let stroke = strokes[activeStroke]
             let local = progress - CGFloat(activeStroke)
@@ -89,8 +121,15 @@ final class OverlayController {
     let model = OverlayModel()
     private var windows: [OverlayWindow] = []
     private var observer: NSObjectProtocol?
+    private var sculptureWindow: SculptureWindow?
+    private var sculptureWatch: AnyCancellable?
 
     func show() {
+        if sculptureWatch == nil {
+            sculptureWatch = model.$sculpture.removeDuplicates().sink { [weak self] sculpture in
+                MainActor.assumeIsolated { self?.present(sculpture) }
+            }
+        }
         if windows.isEmpty { build() }
         windows.forEach { $0.orderFrontRegardless() }
         model.start()
@@ -100,7 +139,17 @@ final class OverlayController {
             }
         }
     }
-    func hide() { windows.forEach { $0.orderOut(nil) }; model.stop() }
+    func hide() { windows.forEach { $0.orderOut(nil) }; model.stop(); model.clear() }
+    private func present(_ sculpture: Sculpture?) {
+        sculptureWindow?.orderOut(nil)
+        sculptureWindow = nil
+        guard let sculpture else { return }
+        let window = SculptureWindow(sculpture: sculpture, frame: model.sculptureFrame)
+        window.orderFrontRegardless()
+        // Keep the buddy's window above the model.
+        windows.forEach { $0.orderFrontRegardless() }
+        sculptureWindow = window
+    }
     private func build() {
         windows = NSScreen.screens.map { screen in
             let window = OverlayWindow(screen: screen)

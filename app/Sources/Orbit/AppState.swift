@@ -154,11 +154,18 @@ final class AppState: ObservableObject {
             do {
                 let result = try await client.reply(settings: configuration, messages: history, image: image?.data, apiKey: key)
                 try Task.checkCancellation()
-                let parsed = SketchScript.parse(result.text)
+                let built = ModelScript.parse(result.text)
+                let parsed = SketchScript.parse(built.text)
                 append(ChatMessage(role: "assistant", text: parsed.text, provider: configuration.provider.title), to: chatID)
                 connectionResults[configuration.provider] = "Reply verified"
                 persist()
                 if let image, !parsed.marks.isEmpty { overlay.model.play(parsed.marks, frame: image.frame) }
+                if let sculpture = built.sculpture {
+                    // 3D models don't need a screenshot; without one they go on the screen under the cursor.
+                    let mouse = NSEvent.mouseLocation
+                    let screen = image?.frame ?? (NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main)?.frame ?? .zero
+                    overlay.model.build(sculpture, frame: screen)
+                }
                 if settings.showCompanion { overlay.model.say(parsed.text) }
                 if spoken || settings.speakResponses { speak(parsed.text) }
             } catch is CancellationError { self.error = "Stopped. You can send another message." }

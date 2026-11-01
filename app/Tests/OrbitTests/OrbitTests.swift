@@ -184,6 +184,32 @@ final class OrbitTests: XCTestCase {
         XCTAssertThrowsError(try ProviderClient.parseCodexModels(Data("nope".utf8)))
     }
 
+    @MainActor func testModelTagsBuildABoundedSculpture() {
+        let reply = """
+        here's a little house.
+        [MODEL:0.7,0.4,0.3:tiny house]
+        [PART:box:0,-0.3,0:1.2,0.8,1:#F5F5F5]
+        [PART:pyramid:0,0.4,0:1.4,0.6,1.2:red]
+        [PART:cylinder:0.4,0.5,0:0.15,0.5:brown]
+        [PART:blob:0,0,0:1,1,1:red]
+        [PART:box:0,0,0:9,1,1:red]
+        """
+        let parsed = ModelScript.parse(reply)
+        XCTAssertEqual(parsed.text, "here's a little house.")
+        let model = try! XCTUnwrap(parsed.sculpture)
+        XCTAssertEqual(model.parts.map(\.shape), [.box, .pyramid, .cylinder]) // unknown shape and oversize part dropped
+        XCTAssertEqual(model.title, "tiny house")
+        XCTAssertEqual(model.parts[2].size, SIMD3(0.15, 0.5, 0.15)) // two sizes: depth follows width
+        let screen = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let frame = model.frame(in: screen)
+        XCTAssertEqual(frame.width, 300)
+        XCTAssertTrue(screen.contains(frame))
+        XCTAssertEqual(SculptureScene.make(model, animated: false).rootNode.childNode(withName: "model", recursively: false)?.childNodes.count, 3)
+        let many = (0..<80).map { _ in "[PART:sphere:0,0,0:0.1:blue]" }.joined()
+        XCTAssertEqual(ModelScript.parse(many).sculpture?.parts.count, ModelScript.maxParts)
+        XCTAssertNil(ModelScript.parse("no model here").sculpture)
+    }
+
     @MainActor func testTypeShortcutOpensTheTypingBox() throws {
         let hotkeys = Hotkeys()
         var typed = 0
