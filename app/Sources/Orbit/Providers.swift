@@ -29,15 +29,22 @@ final class ProviderClient {
     When a screenshot is attached it shows the user's current screen, or just the part of it the user picked.
     You can draw on top of it with an overlay; drawings land exactly on the area the screenshot shows.
     Coordinates are fractions from 0 to 1 measured from the image's top-left corner. Put drawing tags at the end
-    of your reply; the user never sees them as text:
-    [POINT:x,y:label]           fly to a spot and pulse there
-    [BOX:x,y,w,h:label]         highlight a rectangle (x,y is its top-left corner)
-    [CIRCLE:cx,cy,r:label]      circle something; r is a fraction of the image width
-    [ARROW:x1,y1,x2,y2:label]   arrow from x1,y1 pointing at x2,y2
-    [LINE:x1,y1,x2,y2]          underline or straight line
+    of your reply, in the order to draw them; the user never sees them as text:
+    [POINT:x,y:label]           a ring on one spot (a small control, the thing to click)
+    [BOX:x,y,w,h:label]         a dashed frame around a region (x,y is its top-left corner)
+    [CIRCLE:cx,cy,r:label]      ring one thing; r is a fraction of the image width
+    [ARROW:x1,y1,x2,y2:label]   a curved arrow from one thing to another; the label sits at its tail
+    [LINE:x1,y1,x2,y2]          a straight pen line
+    [UNDERLINE:x,y,w]           a line under words that matter; x,y is the start of the words' baseline
+    [HIGHLIGHT:x,y,w,h]         a highlighter over a line of text
+    [NUM:x,y:n]                 a numbered badge for the order of steps
+    [CHECK:x,y] [CROSS:x,y]     right or wrong, beside a thing
     [PATH:x,y x,y x,y ...]      freehand pen stroke, up to 160 points
-    [TEXT:x,y:words]            a short handwritten note
-    Labels are optional except for TEXT and stay under 6 words.
+    [TEXT:x,y:words]            handwritten words on empty space; x,y is where the words start
+    [NOTE:x,y:words]            a sticky note (x,y is its top-left) with a one or two sentence explanation, only on
+                                empty space and never to name something on screen
+    Labels name things in one to four words; Orbit places them beside the mark so they never cover it. Leave a
+    label out when the reply already says what the mark is.
     Whenever showing beats telling (where a button is, which line has the bug, what to click next),
     highlight it instead of describing coordinates. When the user asks you to draw, sketch, diagram or
     write something (for example in a notes app or on a blank canvas), compose it from PATH, LINE, CIRCLE

@@ -61,6 +61,25 @@ struct SettingsView: View {
                             toggle($state.settings.speakResponses)
                         }
                         divider
+                        row("orbit's ink", note: "the colour orbit draws, frames and labels things in") {
+                            HStack(spacing: 10) {
+                                ForEach(Ink.allCases, id: \.self) { ink in
+                                    Button { state.settings.ink = ink; state.saveSettings() } label: {
+                                        Circle().fill(ink.color).frame(width: 18, height: 18)
+                                            .overlay(Circle().strokeBorder(Color.white, lineWidth: 2))
+                                            .padding(3)
+                                            .overlay(Circle().strokeBorder(state.settings.ink == ink ? ink.color : Color.clear, lineWidth: 2))
+                                    }
+                                    .buttonStyle(.plain).help(ink.rawValue.capitalized)
+                                    .accessibilityLabel("\(ink.rawValue) ink")
+                                }
+                            }
+                        }
+                        divider
+                        row("sound effects", note: "a soft pen sound while orbit draws and a pop when a label lands") {
+                            toggle($state.settings.soundEffects)
+                        }
+                        divider
                         row("drawings stay on screen", note: "or clear them anytime with the shortcut below") {
                             Picker("", selection: $state.settings.keepDrawings) {
                                 Text("10 sec").tag(10.0); Text("30 sec").tag(30.0); Text("1 min").tag(60.0); Text("until cleared").tag(0.0)

@@ -23,6 +23,60 @@ final class OrbitTests: XCTestCase {
         XCTAssertEqual(line.prefix(0.5).last!.x, -720, accuracy: 0.001)
     }
 
+    func testNewMarkTagsParseAndResolve() {
+        let parsed = SketchScript.parse("[UNDERLINE:0.1,0.2,0.3][HIGHLIGHT:0.1,0.3,0.4,0.05][NUM:0.2,0.2:1][CHECK:0.5,0.5][CROSS:0.6,0.5][NOTE:0.7,0.1:Save first, then export.][NUM:0.3,0.3]")
+        XCTAssertEqual(parsed.marks, [.underline(CGPoint(x: 0.1, y: 0.2), 0.3), .highlight(CGRect(x: 0.1, y: 0.3, width: 0.4, height: 0.05)),
+                                      .number(CGPoint(x: 0.2, y: 0.2), "1"), .check(CGPoint(x: 0.5, y: 0.5)), .cross(CGPoint(x: 0.6, y: 0.5)),
+                                      .note(CGPoint(x: 0.7, y: 0.1), "Save first, then export.")]) // a NUM without a number is dropped
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let cross = Stroke.make(.cross(CGPoint(x: 0.5, y: 0.5)), in: frame)
+        XCTAssertEqual(cross.paths.count, 2)
+        let note = Stroke.make(.note(CGPoint(x: 0.95, y: 0.95), "hi"), in: frame)
+        XCTAssertTrue(frame.contains(note.box), "notes stay inside the screenshot")
+        let underline = Stroke.make(.underline(CGPoint(x: 0.1, y: 0.5), 0.2), in: frame)
+        XCTAssertEqual(underline.points.first!.y, 397, accuracy: 0.001) // just below the baseline
+        XCTAssertGreaterThan(Stroke.make(.path((0...20).map { CGPoint(x: CGFloat($0) / 20, y: 0.5) }), in: frame).duration,
+                             Stroke.make(.check(CGPoint(x: 0.5, y: 0.5)), in: frame).duration) // long strokes take longer
+    }
+
+    func testLabelsSitBesideTheirMarksWithoutOverlapping() {
+        let screen = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        var strokes = [Stroke.make(.box(CGRect(x: 0.4, y: 0.4, width: 0.1, height: 0.05), "search"), in: screen),
+                       Stroke.make(.point(CGPoint(x: 0.42, y: 0.38), "filters"), in: screen),
+                       Stroke.make(.box(CGRect(x: 0.0, y: 0.0, width: 0.05, height: 0.04), "menu"), in: screen)]
+        LabelLayout.place(&strokes, screens: [screen])
+        let boxes = strokes.compactMap(\.labelBox)
+        XCTAssertEqual(boxes.count, 3)
+        for (i, a) in boxes.enumerated() {
+            XCTAssertTrue(screen.contains(a), "label \(i) stays on screen")
+            for b in boxes[(i + 1)...] { XCTAssertFalse(a.intersects(b)) }
+            XCTAssertFalse(a.intersects(strokes[i].bounds), "label \(i) doesn't cover its own mark")
+        }
+    }
+
+    func testToneSamplerReadsTheImageRightSideUp() throws {
+        let image = NSImage(size: NSSize(width: 100, height: 100), flipped: false) { _ in
+            NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 100, height: 50).fill()   // bottom half white
+            NSColor.black.setFill(); NSRect(x: 0, y: 50, width: 100, height: 50).fill()  // top half black
+            return true
+        }
+        let sampler = try XCTUnwrap(ToneSampler(image))
+        XCTAssertLessThan(sampler.brightness(in: CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.2)), 0.2) // top (origin top-left)
+        XCTAssertGreaterThan(sampler.brightness(in: CGRect(x: 0.1, y: 0.7, width: 0.8, height: 0.2)), 0.8)
+        XCTAssertEqual(sampler.tone(in: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.1)), .light)
+    }
+
+    @MainActor func testSoundEffectsSynthesizeQuietBoundedAudio() throws {
+        for buffer in [SoundFX.blip(from: 880, to: 520, seconds: 0.08, level: 0.22), SoundFX.thump(), SoundFX.ping(), SoundFX.whoosh(),
+                       SoundFX.scratch(seconds: 0.5, low: 2200, high: 5200, level: 0.07)] {
+            let b = try XCTUnwrap(buffer)
+            XCTAssertGreaterThan(b.frameLength, 100)
+            let samples = UnsafeBufferPointer(start: b.floatChannelData![0], count: Int(b.frameLength))
+            XCTAssertTrue(samples.allSatisfy { $0.isFinite && abs($0) <= 1 })
+            XCTAssertGreaterThan(samples.map { abs($0) }.max()!, 0.005, "audible")
+        }
+    }
+
     @MainActor func testEndpointValidation() throws {
         XCTAssertEqual(try ProviderClient.endpoint(base: "https://example.com/v1/", suffix: "chat/completions").absoluteString, "https://example.com/v1/chat/completions")
         XCTAssertEqual(try ProviderClient.endpoint(base: "http://127.0.0.1:11434", suffix: "api/chat").path, "/api/chat")

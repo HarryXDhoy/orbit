@@ -55,6 +55,9 @@ final class AppState: ObservableObject {
     func updateCompanion() {
         if settings.showCompanion { overlay.show() } else { overlay.hide() }
         overlay.model.keepDrawings = settings.keepDrawings > 0 ? settings.keepDrawings : .infinity
+        overlay.model.ink = settings.ink
+        overlay.model.isSpeaking = { [weak self] in self?.speaker.isSpeaking ?? false }
+        SoundFX.shared.enabled = settings.soundEffects
         hotkeys.talk = settings.talkShortcut
         hotkeys.clear = settings.clearShortcut
         hotkeys.open = settings.openShortcut
@@ -63,7 +66,11 @@ final class AppState: ObservableObject {
         hotkeys.onTalkStart = { [weak self] in self?.beginTalk() }
         hotkeys.onTalkEnd = { [weak self] in self?.endTalk() }
         hotkeys.onTalkCancel = { [weak self] in self?.cancelTalk() }
-        hotkeys.onClear = { [weak self] in self?.overlay.model.clear(); self?.overlay.model.say(nil) }
+        hotkeys.onClear = { [weak self] in
+            guard let self else { return }
+            if !self.overlay.model.strokes.isEmpty || self.overlay.model.sculpture != nil { SoundFX.shared.play(.clear) }
+            self.overlay.model.clear(); self.overlay.model.say(nil)
+        }
         hotkeys.onOpen = { [weak self] in self?.showWindow?() }
         hotkeys.onType = { [weak self] in self?.beginTyping() }
         quickType.onSend = { [weak self] text in self?.send(text) }
@@ -177,7 +184,10 @@ final class AppState: ObservableObject {
                 append(ChatMessage(role: "assistant", text: parsed.text, provider: configuration.provider.title), to: chatID)
                 connectionResults[configuration.provider] = "Reply verified"
                 persist()
-                if let image, !parsed.marks.isEmpty { overlay.model.play(parsed.marks, frame: image.frame) }
+                if let image, !parsed.marks.isEmpty {
+                    let sampler = ToneSampler(image.image)
+                    overlay.model.play(parsed.marks, frame: image.frame, tone: { sampler?.tone(in: $0) ?? .dark })
+                }
                 if let sculpture = built.sculpture {
                     // 3D models don't need a screenshot; without one they go on the screen under the cursor.
                     let mouse = NSEvent.mouseLocation

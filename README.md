@@ -14,7 +14,7 @@ Orbit sits next to your cursor. Hold **⌃ control + ⌥ option** anywhere and a
 - **Push to talk**: hold ⌃⌥, speak, then let go. Speech is recognized on device when your Mac supports it.
 - **Sees your screen**: each message includes a screenshot of the display under your cursor. You can turn this off with "sees screen".
 - **Pick an area**: the "area" button in the composer lets you drag over part of the screen, like ⌘⇧4, so Orbit looks at just that part. A click takes the whole screen; Esc cancels.
-- **Points and draws**: replies can include drawing tags (`POINT`, `BOX`, `CIRCLE`, `ARROW`, `LINE`, `PATH`, `TEXT`). Orbit animates them over your screen as if drawn with a pen.
+- **Points and draws**: replies can include drawing tags (`POINT`, `BOX`, `CIRCLE`, `ARROW`, `LINE`, `UNDERLINE`, `HIGHLIGHT`, `NUM`, `CHECK`, `CROSS`, `PATH`, `TEXT`, `NOTE`). Orbit draws them over your screen with a glowing pen in your chosen ink, names things in small gel labels that never overlap, writes in handwriting that stays readable on dark and light screens, and pins sticky notes for explanations. Soft pen and pop sounds go with it.
 - **Builds 3D models**: ask for something in 3D and Orbit builds a small model next to your cursor from simple shapes (`MODEL` and `PART` tags), one piece at a time, then slowly turns it. Rendered natively with SceneKit.
 - **Chats**: past conversations are listed in a sidebar, like other AI apps.
 - **Type from anywhere**: press ⌃⌘T in any app and a small box opens next to your cursor. Type, press return, and Orbit answers in its bubble and draws. The shortcut can also be modifiers alone, like ⌃⌘, which open the box with a quick tap.

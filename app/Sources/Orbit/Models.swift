@@ -80,6 +80,11 @@ struct ConnectionSettings: Codable {
     /// Connectors Orbit may use, per provider.
     var connectorChoices: [ConnectorChoice]?
     var connectors: [ConnectorChoice] { get { connectorChoices ?? [] } set { connectorChoices = newValue } }
+    var inkColor: Ink?
+    var sounds: Bool?
+    /// The colour Orbit draws in.
+    var ink: Ink { get { inkColor ?? .blue } set { inkColor = newValue } }
+    var soundEffects: Bool { get { sounds ?? true } set { sounds = newValue } }
     /// How long drawings stay on screen; 0 keeps them until cleared.
     var keepDrawings: Double { get { drawingSeconds ?? 30 } set { drawingSeconds = newValue } }
 }

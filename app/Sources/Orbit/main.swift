@@ -7,6 +7,7 @@ final class OrbitDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var status: NSStatusItem?
     func applicationDidFinishLaunching(_ notification: Notification) {
+        FontRegistry.registerBundledFonts()
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1010, height: 740), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Orbit"
         window.titleVisibility = .hidden

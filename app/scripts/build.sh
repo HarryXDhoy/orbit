@@ -11,6 +11,10 @@ mkdir -p "$stage/Orbit.app/Contents/MacOS" "$stage/Orbit.app/Contents/Resources"
 cp -X .build/release/Orbit "$stage/Orbit.app/Contents/MacOS/Orbit"
 cp -X Info.plist "$stage/Orbit.app/Contents/Info.plist"
 cp -X Resources/AppIcon.icns "$stage/Orbit.app/Contents/Resources/AppIcon.icns"
+if [ -d Resources/Fonts ]; then
+    mkdir -p "$stage/Orbit.app/Contents/Resources/Fonts"
+    cp -X Resources/Fonts/* "$stage/Orbit.app/Contents/Resources/Fonts/"
+fi
 # Sign with a stable identity so macOS keeps Screen Recording, Microphone and Accessibility grants across
 # rebuilds (an ad-hoc signature changes every build, which silently invalidates them).
 identity="${ORBIT_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application|Apple Development/ { print $2; exit }')}"
