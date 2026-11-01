@@ -1,0 +1,345 @@
+import AppKit
+import SwiftUI
+
+struct AppView: View {
+    @ObservedObject var state: AppState
+    var body: some View {
+        ZStack(alignment: .top) {
+            DotGrid().ignoresSafeArea()
+            VStack(spacing: 0) {
+                topBar
+                if state.selectedPage == "connections" { ConnectionsView(state: state) }
+                else { ChatView(state: state, voice: state.voice) }
+            }
+            .ignoresSafeArea(.container, edges: .top)
+            if let error = state.error { errorBanner(error).padding(.top, 8) }
+        }
+        .frame(minWidth: 850, minHeight: 630)
+        .preferredColorScheme(.light)
+        .animation(.easeOut(duration: 0.18), value: state.error)
+    }
+
+    // A menu-bar style strip living inside the window's title bar.
+    var topBar: some View {
+        ZStack {
+            HStack(spacing: 18) {
+                Text("orbit").font(DS.Typography.bodyMedium).foregroundStyle(DS.Colors.ink)
+                nav("chat", page: "chat")
+                nav("connections", page: "connections")
+                Spacer()
+                Toggle(isOn: $state.settings.showCompanion) { Text("buddy") }
+                    .toggleStyle(PillToggleStyle())
+                    .onChange(of: state.settings.showCompanion) { _, _ in state.saveSettings() }
+                    .help("Show Orbit on your desktop")
+                StatusPill(text: state.settings.provider.title.lowercased(), live: state.connectionResults[state.settings.provider] != "Not connected")
+                if state.selectedPage == "chat" {
+                    Button("new chat") { state.newChat() }.buttonStyle(LinkButtonStyle()).disabled(state.isBusy)
+                }
+            }
+            OrbitMark(size: 22)
+        }
+        .padding(.leading, 82).padding(.trailing, 20).frame(height: 52)
+        .background(DS.Colors.canvas.opacity(0.85))
+        .overlay(alignment: .bottom) { Rectangle().fill(DS.Colors.hairline).frame(height: 1) }
+    }
+
+    func nav(_ title: String, page: String) -> some View {
+        Button(title) { state.selectedPage = page }
+            .buttonStyle(LinkButtonStyle(color: state.selectedPage == page ? DS.Colors.ink : DS.Colors.ink2))
+    }
+
+    func errorBanner(_ error: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("(・_・;)").font(DS.Typography.label)
+            Text(error).font(DS.Typography.label).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            Button { state.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle())
+        }
+        .foregroundStyle(DS.Colors.danger)
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(DS.Colors.surface, in: RoundedRectangle(cornerRadius: DS.Radius.card))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).strokeBorder(DS.Colors.danger.opacity(0.35), lineWidth: DS.edge))
+        .dsShadow()
+        .frame(maxWidth: 560)
+        .padding(.horizontal, 24)
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+}
+
+struct PillToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            HStack(spacing: 6) {
+                Circle().fill(configuration.isOn ? DS.Colors.live : DS.Colors.ink3).frame(width: 6, height: 6)
+                configuration.label
+            }
+        }.buttonStyle(PillButtonStyle(kind: configuration.isOn ? .aqua : .silver, compact: true))
+    }
+}
+
+struct ChatView: View {
+    @ObservedObject var state: AppState
+    @ObservedObject var voice: VoiceInput
+    @FocusState var composerFocused: Bool
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { reader in
+                ScrollView {
+                    if state.messages.isEmpty { welcome }
+                    else {
+                        LazyVStack(spacing: 18) {
+                            ForEach(state.messages) { message in row(message).id(message.id) }
+                            if state.isBusy { thinking.id("busy") }
+                            Color.clear.frame(height: 1).id("bottom")
+                        }
+                        .frame(maxWidth: 720).padding(.horizontal, 32).padding(.vertical, 28)
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .onChange(of: state.messages.count) { _, _ in withAnimation { reader.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: state.isBusy) { _, _ in withAnimation { reader.scrollTo("bottom", anchor: .bottom) } }
+            }
+            composer
+        }
+    }
+
+    func row(_ message: ChatMessage) -> some View {
+        let mine = message.role == "user"
+        return VStack(alignment: mine ? .trailing : .leading, spacing: 8) {
+            SpeechBubble(mine: mine) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if message.hadImage { Label("shared my screen", systemImage: "viewfinder").font(DS.Typography.caption).foregroundStyle(DS.Colors.ink2) }
+                    Text(message.text).font(DS.Typography.body).lineSpacing(4).textSelection(.enabled).foregroundStyle(DS.Colors.ink)
+                }
+            }
+            .frame(maxWidth: 520, alignment: mine ? .trailing : .leading)
+            HStack(spacing: 2) {
+                Text(mine ? "you" : "orbit · \((message.provider ?? state.settings.provider.title).lowercased())")
+                    .font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3).padding(.trailing, 4)
+                if !mine {
+                    Button { state.speak(message.text) } label: { Image(systemName: "speaker.wave.2") }.buttonStyle(IconButtonStyle()).help("Read aloud")
+                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(IconButtonStyle()).help("Copy reply")
+                }
+            }.padding(.horizontal, 6)
+        }
+        .padding(.top, 4)
+        .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
+    }
+
+    var thinking: some View {
+        HStack(spacing: 10) {
+            SpeechBubble(mine: false) { Waveform(active: true, bars: 7) }
+            Text("thinking with \(state.settings.provider.title.lowercased())…").font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    var welcome: some View {
+        ZStack {
+            // Little faces drifting around the canvas.
+            GeometryReader { geo in
+                ForEach(Array(kaomoji.enumerated()), id: \.offset) { _, item in
+                    Text(item.0).font(.system(size: 15)).foregroundStyle(DS.Colors.ink2)
+                        .position(x: geo.size.width * item.1, y: geo.size.height * item.2)
+                }
+            }
+            VStack(spacing: 14) {
+                OrbitMark(size: 64).padding(.bottom, 6)
+                Text("orbit").font(DS.Typography.display).tracking(-1.5).foregroundStyle(DS.Colors.ink)
+                Text("a little buddy that lives on your mac").font(.system(size: 17)).foregroundStyle(DS.Colors.ink)
+                HStack(alignment: .top, spacing: 12) {
+                    suggestion("explain my screen", icon: "viewfinder", kind: .aqua, note: "shared only when you ask") {
+                        state.draft = "Explain what’s on my screen and help me with the next step."; state.capture()
+                    }
+                    suggestion("think it through", icon: "lightbulb", kind: .silver, note: "type or talk, your call") {
+                        state.draft = "Help me think through an idea. Ask me one question to get started."; composerFocused = true
+                    }
+                }.padding(.top, 14)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 440)
+    }
+
+    private let kaomoji: [(String, CGFloat, CGFloat)] = [("^ ω ^", 0.2, 0.18), ("{ ^-^ }", 0.82, 0.26), ("(˘▾˘)", 0.14, 0.72), ("(•‿•)", 0.86, 0.78)]
+
+    func suggestion(_ title: String, icon: String, kind: PillKind, note: String, action: @escaping () -> Void) -> some View {
+        VStack(spacing: 7) {
+            Button(action: action) { Label(title, systemImage: icon) }.buttonStyle(PillButtonStyle(kind: kind))
+            Text(note).font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3)
+        }
+    }
+
+    var composer: some View {
+        VStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 12) {
+                if let attachment = state.attachment {
+                    HStack(spacing: 12) {
+                        MacWindow(title: "screen.png") {
+                            Image(nsImage: attachment.image).resizable().scaledToFill().frame(width: 120, height: 66).clipped()
+                        }.frame(width: 120)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("screen ready to share").font(DS.Typography.bodyMedium)
+                            Text("goes to \(state.settings.provider.title.lowercased()) with your next message").font(DS.Typography.caption).foregroundStyle(DS.Colors.ink2)
+                        }
+                        Spacer()
+                        Button { state.attachment = nil } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle()).help("Remove screenshot")
+                    }
+                }
+                HStack(alignment: .center, spacing: 10) {
+                    if voice.isRecording { Waveform(active: true) }
+                    TextField(voice.isRecording ? "listening…" : "what’s on your mind?", text: $state.draft, axis: .vertical)
+                        .font(.system(size: 15)).textFieldStyle(.plain).lineLimit(1...5).focused($composerFocused)
+                        .onSubmit { state.send() }.disabled(state.isBusy)
+                        .accessibilityIdentifier("messageInput")
+                }
+                HStack(spacing: 8) {
+                    Button { state.capture() } label: { Label(state.isCapturing ? "capturing…" : "screen", systemImage: "viewfinder") }
+                        .buttonStyle(PillButtonStyle(kind: .silver, compact: true)).disabled(state.isBusy || state.isCapturing)
+                    Button { state.toggleVoice() } label: { Label(voice.isRecording ? "done" : "talk", systemImage: voice.isRecording ? "stop.fill" : "mic") }
+                        .buttonStyle(PillButtonStyle(kind: voice.isRecording ? .aqua : .silver, compact: true)).disabled(state.isBusy)
+                        .help(voice.isRecording ? "Stop dictation" : "Dictate into the message box")
+                    Toggle(isOn: $state.settings.seesScreen) { Text("sees screen") }
+                        .toggleStyle(PillToggleStyle()).help("Look at your screen with every message so Orbit can point and draw")
+                        .onChange(of: state.settings.seesScreen) { _, _ in state.saveSettings() }
+                    Toggle(isOn: $state.settings.speakResponses) { Text("read aloud") }
+                        .toggleStyle(PillToggleStyle()).help("Read replies aloud")
+                        .onChange(of: state.settings.speakResponses) { _, _ in state.saveSettings() }
+                    Spacer()
+                    if state.isBusy {
+                        Button { state.stop() } label: { Label("stop", systemImage: "stop.fill") }.buttonStyle(PillButtonStyle(kind: .silver))
+                    } else {
+                        Button { state.send() } label: { Label("send", systemImage: "arrow.up") }
+                            .buttonStyle(PillButtonStyle(kind: .aqua)).keyboardShortcut(.return, modifiers: .command)
+                            .disabled(state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityIdentifier("sendMessage")
+                    }
+                }
+            }
+            .padding(16)
+            .background(DS.Colors.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.black.opacity(0.12), lineWidth: DS.edge))
+            .dsShadow()
+            HStack(spacing: 6) {
+                Text(voice.isRecording ? "listening… tap done, then check your words before sending" : "hold ⌃ control + ⌥ option anywhere to talk  ·  ⌘ return to send")
+                if !state.hotkeyTrusted && state.settings.talkHotkey && !voice.isRecording {
+                    Button("allow the hotkey") { state.allowHotkey() }.buttonStyle(LinkButtonStyle()).font(DS.Typography.caption)
+                }
+            }
+            .font(DS.Typography.caption).foregroundStyle(DS.Colors.ink3)
+        }
+        .frame(maxWidth: 720).padding(.horizontal, 32).padding(.bottom, 18)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct ConnectionsView: View {
+    @ObservedObject var state: AppState
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("choose what powers orbit").font(DS.Typography.title).foregroundStyle(DS.Colors.ink)
+                    Text("bring your subscription, an api, or a model on this mac.").font(DS.Typography.label).foregroundStyle(DS.Colors.ink2)
+                }
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 14) {
+                    ForEach(ProviderKind.allCases) { provider in card(provider) }
+                }
+                MacWindow(title: "\(state.settings.provider.title.lowercased()) — connection") { form.padding(20) }
+                    .disabled(state.isBusy && state.connectionResults[state.settings.provider] != "Testing…")
+                HStack(alignment: .top, spacing: 10) {
+                    Text("( ˘ ³˘)").font(DS.Typography.label)
+                    Text("orbit keeps your chat on this mac. messages and any screenshot you attach go only to the connection you pick. subscription sign-in stays with the official cli.")
+                        .font(DS.Typography.caption).lineSpacing(4)
+                }.foregroundStyle(DS.Colors.ink3)
+            }
+            .frame(maxWidth: 720).padding(.horizontal, 32).padding(.vertical, 28)
+            .frame(maxWidth: .infinity)
+        }.onAppear { if state.settings.provider == .custom { state.loadKey() } }
+    }
+
+    func card(_ provider: ProviderKind) -> some View {
+        let selected = state.settings.provider == provider
+        return Button { state.selectProvider(provider) } label: {
+            MacWindow(title: provider.fileName, highlighted: selected) {
+                HStack(spacing: 12) {
+                    Image(systemName: provider.symbol).font(.system(size: 18)).foregroundStyle(DS.Colors.ink)
+                        .frame(width: 38, height: 38)
+                        .background(selected ? AnyShapeStyle(DS.Colors.aqua) : AnyShapeStyle(DS.Colors.silver), in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(selected ? DS.Colors.aquaEdge.opacity(0.7) : DS.Colors.silverEdge.opacity(0.4), lineWidth: DS.edge))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(provider.title.lowercased()).font(DS.Typography.bodyMedium).foregroundStyle(DS.Colors.ink)
+                        Text(provider.subtitle.lowercased()).font(DS.Typography.caption).foregroundStyle(DS.Colors.ink2)
+                    }
+                    Spacer()
+                    if selected { StatusPill(text: "in use") }
+                }.padding(14)
+            }
+        }.buttonStyle(.plain).disabled(state.isBusy)
+    }
+
+    @ViewBuilder var form: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            switch state.settings.provider {
+            case .codex:
+                DSField(title: "Codex executable", text: $state.settings.codexPath, placeholder: "/absolute/path/to/codex")
+                DSField(title: "Model (optional)", text: $state.settings.codexModel, placeholder: "use the cli’s default model")
+                subscriptionHelp("Codex")
+            case .claude:
+                DSField(title: "Claude Code executable", text: $state.settings.claudePath, placeholder: "/absolute/path/to/claude")
+                DSField(title: "Model (optional)", text: $state.settings.claudeModel, placeholder: "use the cli’s default model")
+                subscriptionHelp("Claude Code")
+            case .custom:
+                DSField(title: "API base URL", text: $state.settings.customBaseURL, placeholder: "https://your-provider.example/v1")
+                    .onChange(of: state.settings.customBaseURL) { _, _ in state.apiKey = "" }
+                DSField(title: "Model", text: $state.settings.customModel, placeholder: "your provider’s model id")
+                DSField(title: "API key (optional for local servers)", text: $state.apiKey, placeholder: "stored in macOS keychain", secure: true)
+                Button("load saved key for this endpoint") { state.loadKey() }.buttonStyle(LinkButtonStyle())
+                note("uses chat completions. screen sharing needs a vision model. api billing is separate from cli subscriptions.")
+            case .ollama:
+                DSField(title: "Ollama server", text: $state.settings.ollamaBaseURL, placeholder: "http://localhost:11434")
+                DSField(title: "Model", text: $state.settings.ollamaModel, placeholder: "choose an installed model")
+                HStack(spacing: 8) {
+                    Button(state.isLoadingModels ? "looking…" : "find installed models") { state.fetchModels() }
+                        .buttonStyle(PillButtonStyle(kind: .silver, compact: true)).disabled(state.isLoadingModels)
+                    if !state.localModels.isEmpty {
+                        Menu("choose model") { ForEach(state.localModels, id: \.self) { model in Button(model) { state.settings.ollamaModel = model; state.saveSettings() } } }
+                            .menuStyle(.borderlessButton).fixedSize().font(DS.Typography.label)
+                    }
+                }
+                note("start ollama first. use a vision model for screenshots. nothing downloads automatically.")
+            }
+            Rectangle().fill(DS.Colors.hairline).frame(height: 1).padding(.vertical, 2)
+            HStack(spacing: 10) {
+                Button("save") { if state.saveConnection() { state.connectionResults[state.settings.provider] = "Saved · test to verify" } }
+                    .buttonStyle(PillButtonStyle(kind: .silver))
+                Button(state.isBusy ? "testing…" : "test connection") { state.testConnection() }
+                    .buttonStyle(PillButtonStyle(kind: .aqua)).disabled(state.isBusy)
+                if state.isBusy { Button("stop") { state.stop() }.buttonStyle(LinkButtonStyle()) }
+                Spacer()
+                let result = state.connectionResults[state.settings.provider]
+                StatusPill(text: (result ?? "not tested yet").lowercased(), live: result != nil && result != "Not connected")
+                    .textSelection(.enabled).lineLimit(2)
+            }
+        }
+    }
+
+    func note(_ text: String) -> some View {
+        Text(text).font(DS.Typography.caption).foregroundStyle(DS.Colors.ink2)
+    }
+
+    func subscriptionHelp(_ name: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            note("uses your existing \(name.lowercased()) login and its plan limits. the connection test sends one short request.")
+            Button("sign in with \(name.lowercased())…") { state.openLogin() }.buttonStyle(PillButtonStyle(kind: .silver, compact: true))
+        }
+    }
+}
+
+extension ProviderKind {
+    var fileName: String {
+        switch self {
+        case .codex: return "chatgpt.app"
+        case .claude: return "claude.app"
+        case .custom: return "custom-api.json"
+        case .ollama: return "ollama.local"
+        }
+    }
+}

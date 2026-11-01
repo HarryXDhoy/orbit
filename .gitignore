@@ -1,0 +1,10 @@
+# Build output
+app/.build/
+app/dist/
+.DS_Store
+
+# Local research material: never published
+evidence/
+reference/
+tools/
+archive/
